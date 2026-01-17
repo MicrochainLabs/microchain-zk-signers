@@ -1,0 +1,5 @@
+[workspace]
+members = [
+  "zk_multi_sig_ecdsa",
+  "zk_multi_sig_ecdsa_private_state_validation",
+]

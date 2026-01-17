@@ -1,0 +1,8 @@
+[package]
+name = "zk_multi_sig_ecdsa_private_state_validation"
+type = "bin"
+authors = ["Walid Khemiri"]
+
+[dependencies]
+binary_merkle_root = { git = "https://github.com/privacy-scaling-explorations/zk-kit.noir", tag = "binary-merkle-root-v0.0.1", directory = "packages/binary-merkle-root" }
+poseidon = { tag = "v0.2.0", git = "https://github.com/noir-lang/poseidon" }
