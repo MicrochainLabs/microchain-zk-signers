@@ -14,24 +14,51 @@ import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
  */
 export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
   
-  // Deploy the HonkVerifier for private state validation (different circuit than signature verification)
+  // Deploy ZKTranscriptLib library required by HonkVerifier
+  const zkTranscriptLib = m.library(
+    "noir/target/zk_multi_sig_ecdsa_private_state_validation.sol:ZKTranscriptLib",
+    {
+      id: "zkTranscriptLib"
+    }
+  );
+
+  // Deploy the HonkVerifier for private state validation
   // Using fully qualified name since both circuits export "HonkVerifier"
   const privateStateValidationHonkVerifier = m.contract(
     "noir/target/zk_multi_sig_ecdsa_private_state_validation.sol:HonkVerifier",
     [],
     {
-      id: "privateStateValidationHonkVerifier"
+      id: "privateStateValidationHonkVerifier",
+      libraries: {
+        ZKTranscriptLib: zkTranscriptLib
+      }
     }
   );
   // Deploy the ERC-8039 adapter for private state validation
   const erc8039PrivateStateValidation = m.contract("PrivateStateValidationProofVerifier", [privateStateValidationHonkVerifier]);
   
+  // Deploy ZKTranscriptLib library for transaction validation circuit
+  const zkTranscriptLibTx = m.library(
+    "noir/target/zk_multi_sig_ecdsa.sol:ZKTranscriptLib",
+    {
+      id: "zkTranscriptLibTx"
+    }
+  );
 
   // Deploy the HonkVerifier for signature verification
   // Using fully qualified name to distinguish from state validation verifier
-  const txValidationHonkVerifier = m.contract("noir/target/zk_multi_sig_ecdsa.sol:HonkVerifier", []);
+  const txValidationHonkVerifier = m.contract(
+    "noir/target/zk_multi_sig_ecdsa.sol:HonkVerifier", 
+    [],
+    {
+      id: "txValidationHonkVerifier",
+      libraries: {
+        ZKTranscriptLib: zkTranscriptLibTx
+      }
+    }
+  );
   // Deploy the ERC-8039 adapter for transaction signature validation
-  const erc8039TxValidation = m.contract("HonkProofVerifier", [txValidationHonkVerifier]);
+  const erc8039TxValidation = m.contract("ZKMultiSigEcdsaProofVerifier", [txValidationHonkVerifier]);
 
 
   // Deploy the Factory (which deploys the Singleton in its constructor)

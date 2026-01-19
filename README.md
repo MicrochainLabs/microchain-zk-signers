@@ -1,10 +1,10 @@
 # Microchain ZK Signers
 
-**Privacy-preserving multi-signature smart contract wallets using zero-knowledge proofs**
+**Privacy-preserving multi-signature smart account using zero-knowledge proofs**
 
 ## Overview
 
-Microchain ZK Signers is a protocol for creating privacy-preserving multi-signature smart contract accounts on Ethereum. It uses zero-knowledge proofs to enable threshold signature Validation while keeping the signer set completely private on-chain. Only a cryptographic commitment (Merkle root) to the authorized signers is stored publicly.
+Microchain ZK Signers is a protocol for creating privacy-preserving multi-signature smart account on Ethereum. It uses zero-knowledge proofs to enable threshold signature Validation while keeping the signer set completely private on-chain. Only a cryptographic commitment (Merkle root) to the authorized signers is stored publicly.
 
 ### Key Features
 
