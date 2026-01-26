@@ -1,10 +1,10 @@
 # Microchain ZK Signers
 
-**Privacy-preserving multi-signature smart contract wallets using zero-knowledge proofs**
+**Privacy-preserving multi-signature smart account using zero-knowledge proofs**
 
 ## Overview
 
-Microchain ZK Signers is a protocol for creating privacy-preserving multi-signature smart contract accounts on Ethereum. It uses zero-knowledge proofs to enable threshold signature Validation while keeping the signer set completely private on-chain. Only a cryptographic commitment (Merkle root) to the authorized signers is stored publicly.
+Microchain ZK Signers is a protocol for creating privacy-preserving multi-signature smart account on Ethereum. It uses zero-knowledge proofs to enable threshold signature Validation while keeping the signer set completely private on-chain. Only a cryptographic commitment (Merkle root) to the authorized signers is stored publicly.
 
 ### Key Features
 
@@ -423,6 +423,62 @@ To execute a Safe transaction:
 - If using Owner 2: Generate ZK proof with 2+ of the 3 private signatures
 - If using Owner 3: Standard EOA signature
 ```
+
+### Command line usage
+
+A set of Hardhat tasks are implemented for most common tasks, automate the usage of zkSafe.
+
+#### Contracts deployments
+
+Deploy a new instance of contracts(factory, verifiers):
+
+```
+npx hardhat --network <mainnet|sepolia|gnosis|etc> createFactory
+```
+
+#### Deploy new Safe owner
+
+Deploy a new contract owner:
+
+```
+npx hardhat createPrivateMultiSignersProxyContract --network <mainnet|sepolia|gnosis|etc> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --factoryaddress <owner factory contract address> --txvalidationverifieraddress <tx validator contract address>
+```
+
+#### Creating new Safe using the contract owner
+
+```
+npx hardhat createSafeWithinMicorchainProtocol --network <mainnet|sepolia|gnosis|etc> --owners <contract owner address> --threshold 1
+```
+
+
+#### Sign a new transaction
+
+```
+npx hardhat --network <mainnet|sepolia|gnosis|etc> sign --safe <safe address> --to <to-address> --value <to-value-in-wei> --data <calldata>
+```
+
+#### Proving the transaction
+
+Having collected all the signatures, we need to generate a proof. This is done with the `prove` hardhat task.
+
+```
+npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2> <sinagure3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --signersaddressesformat 0 --salt <salt value> 
+```
+
+Proving might take a couple of minutes, and would return a large hex string starting with 0x.  This is the prove that needs to be sent to zkSafe along with the transaction.
+
+WARNING: Only up to 5 owners/signatures is supported at the moment. This limit can be increased.
+
+
+#### Sending a proven transaction
+
+Once we have the proof, we may send it. Proving and sending the transaction are separate steps, because they can be done by different entities. For instance, one can send the transaction from a relay.
+Here is how one can use the hardhat task `zksend`.
+
+```
+npx hardhat --network  <mainnet|sepolia|gnosis|etc> zksend --safe <safe address>  --to <to-address> --value <to-value-in-wei> --data <calldata> --proof <proof hex string>
+```
+
 
 ### Code Example
 

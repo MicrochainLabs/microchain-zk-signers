@@ -16,7 +16,7 @@ import { LeanIMT } from "@zk-kit/lean-imt";
 // Native Noir packages (bypassing outdated hardhat-noir)
 // Install with: pnpm add @noir-lang/noir_js @aztec/bb.js
 import { Noir } from "@noir-lang/noir_js";
-import { UltraHonkBackend } from "@aztec/bb.js";
+import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -176,7 +176,8 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
         const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
         
         // Initialize UltraHonk backend with bytecode and Noir for witness generation
-        const backend = new UltraHonkBackend(compiledCircuit.bytecode, { threads: 8 });
+        const api = await Barretenberg.new({ threads: 1 });
+        const backend = new UltraHonkBackend(compiledCircuit.bytecode,  api )
         const noir = new Noir(compiledCircuit);
         console.log("UltraHonk backend initialized (bypassing hardhat-noir)");
 
@@ -279,7 +280,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
         console.log("Generating proof...");
         const startTime = Date.now();
         const proofData = await backend.generateProof(witness, {
-            keccak: true
+            verifierTarget: 'evm', // Use keccak hash for EVM verification
         });
         const provingTime = Date.now() - startTime;
         console.log(`Proof generated successfully in ${provingTime}ms`);
@@ -289,13 +290,13 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
         // Verify proof
         console.log("Verifying proof...");
         const isValid = await backend.verifyProof(proofData, { 
-            keccak: true
+            verifierTarget: 'evm', // Use keccak hash for EVM verification
         });
         assert(isValid, "Verification failed");
         console.log("Proof verification succeeded");
         
         // Clean up backend resources
-        await backend.destroy();
+        await api.destroy();
         
         return proofData;
 }
@@ -325,7 +326,8 @@ export async function proveStateConfiguration(
     const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
 
     // Initialize UltraHonk backend for state validation circuit
-    const backend = new UltraHonkBackend(compiledCircuit.bytecode, { threads: 8 });
+    const api = await Barretenberg.new({ threads: 1 });
+    const backend = new UltraHonkBackend(compiledCircuit.bytecode,  api );
     const noir = new Noir(compiledCircuit);
     console.log("State validation UltraHonk backend initialized");
 
@@ -349,7 +351,7 @@ export async function proveStateConfiguration(
         console.log("Generating state validation proof...");
         const startTime = Date.now();
         const proofData = await backend.generateProof(witness, {
-            keccak: true, // Use keccak hash for EVM verification
+            verifierTarget: 'evm', // Use keccak hash for EVM verification
         });
         const provingTime = Date.now() - startTime;
         console.log(`State validation proof generated in ${provingTime}ms`);
@@ -359,14 +361,14 @@ export async function proveStateConfiguration(
         // Verify proof locally
         console.log("Verifying state validation proof...");
         const isValid = await backend.verifyProof(proofData, {
-            keccak: true // Use keccak hash for EVM verification
+            verifierTarget: 'evm' // Use keccak hash for EVM verification
         });
         assert(isValid, "State validation proof verification failed");
         console.log("State validation proof verified successfully");
 
         return proofData;
     } finally {
-        await backend.destroy();
+        await api.destroy();
     }
 }
 
