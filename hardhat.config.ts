@@ -1,13 +1,17 @@
 import { HardhatUserConfig } from "hardhat/types";
+//import { task, vars } from "hardhat/config";
 import "hardhat-deploy";
 import "@nomicfoundation/hardhat-toolbox-viem";
 import "@nomicfoundation/hardhat-ignition";
 import "@nomicfoundation/hardhat-ignition-viem";
+import "@nomicfoundation/hardhat-foundry";
 
 import { DeterministicDeploymentInfo } from "hardhat-deploy/dist/types";
 import { getSingletonFactoryInfo } from "@safe-global/safe-singleton-factory";
 
 import { createSafeWithinMicorchainProtocol, sign, prove, send, createPrivateMultiSignersFactoryContract, createPrivateMultiSignersProxyContract } from "./zksafe/zksafe";
+import { computeZKNexusAddress, getZKNexusConfig, checkZKNexusInitialized, createPrivateMultiSignersModuleFactoryContract, createZKNexusAccountV2, sendZKNexusUserOp, getAccountEntryPoint, signUserOp } from "./zknexus/zknexus";
+import { task, vars } from "hardhat/config";
 
 // copied from @safe-global/safe-contracts
 const deterministicDeployment = (network: string): DeterministicDeploymentInfo => {
@@ -67,6 +71,127 @@ task("createPrivateMultiSignersProxyContract", "Create a private multi signers c
 task("createFactory", "Create Factor")
     .setAction(async (taskArgs, hre) => createPrivateMultiSignersFactoryContract(hre));
 
+
+
+
+
+
+task("createModuleFactory", "Create Factor")
+    .setAction(async (taskArgs, hre) => createPrivateMultiSignersModuleFactoryContract(hre));
+
+task("createZKNexusAccount", "Create a new ZK MultiSig Nexus account")
+    .addParam("privatesigners", "Comma separated list of private signers")
+    .addParam("privatethreshold", "Private threshold")
+    .addParam("modulevalidatoraddress", "Validator contract address")
+    .addParam("factoryaddress", "Factory contract address")
+    .setAction(async (taskArgs, hre) => createZKNexusAccountV2(
+        hre,
+        taskArgs.privatesigners.split(","),
+        taskArgs.privatethreshold,
+        taskArgs.modulevalidatoraddress,
+        taskArgs.factoryaddress
+    ));
+
+task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-collected signatures")
+    .addParam("account", "The Nexus account address")
+    .addParam("validator", "Validator contract address")
+    .addOptionalParam("entrypoint", "EntryPoint contract address (auto-detected if not provided)", "")
+    .addParam("to", "Target address")
+    .addParam("value", "Value in wei")
+    .addParam("data", "Call data (hex)")
+    .addParam("signatures", "Comma separated list of signatures from signUserOp")
+    .addParam("userophash", "UserOp hash from signUserOp")
+    .addParam("privatesigners", "Comma separated list of private signer addresses")
+    .addParam("privatethreshold", "Private threshold")
+    .addParam("salt", "Salt used during account creation")
+    .setAction(async (taskArgs, hre) => sendZKNexusUserOp(
+        hre,
+        taskArgs.account,
+        taskArgs.validator,
+        taskArgs.entrypoint,
+        taskArgs.to,
+        taskArgs.value,
+        taskArgs.data,
+        taskArgs.signatures.split(",") as `0x${string}`[],
+        taskArgs.userophash as `0x${string}`,
+        taskArgs.privatesigners.split(","),
+        parseInt(taskArgs.privatethreshold),
+        taskArgs.salt as `0x${string}`
+    ));
+
+task("getAccountEntryPoint", "Get the EntryPoint address used by a Nexus account")
+    .addParam("account", "The Nexus account address")
+    .setAction(async (taskArgs, hre) => getAccountEntryPoint(hre, taskArgs.account));
+
+task("signUserOp", "Sign a UserOperation for a Nexus account (like zksafe sign)")
+    .addParam("account", "The Nexus account address")
+    .addParam("validator", "Validator contract address")
+    .addParam("to", "Target address")
+    .addParam("value", "Value in wei")
+    .addParam("data", "Call data (hex)")
+    .setAction(async (taskArgs, hre) => signUserOp(
+        hre,
+        taskArgs.account,
+        taskArgs.validator,
+        taskArgs.to,
+        taskArgs.value,
+        taskArgs.data
+    ));
+
+
+
+
+
+
+// ZK Nexus tasks
+/*task("createZKNexusAccount", "Create a new ZK MultiSig Nexus account")
+    .addParam("factory", "Factory contract address")
+    .addParam("validator", "Validator contract address")
+    .addParam("stateroot", "State root commitment")
+    .addParam("proof", "State validation ZK proof (hex string)")
+    .addOptionalParam("index", "Account index", "0")
+    .setAction(async (taskArgs, hre) => createZKNexusAccount(
+        hre,
+        taskArgs.factory,
+        taskArgs.validator,
+        taskArgs.stateroot,
+        taskArgs.proof,
+        taskArgs.index
+    ));*/
+
+task("computeZKNexusAddress", "Compute deterministic address for a ZK Nexus account")
+    .addParam("factory", "Factory contract address")
+    .addParam("validator", "Validator contract address")
+    .addParam("stateroot", "State root commitment")
+    .addParam("proof", "State validation ZK proof (hex string)")
+    .addOptionalParam("index", "Account index", "0")
+    .setAction(async (taskArgs, hre) => computeZKNexusAddress(
+        hre,
+        taskArgs.factory,
+        taskArgs.validator,
+        taskArgs.stateroot,
+        taskArgs.proof,
+        taskArgs.index
+    ));
+
+task("getZKNexusConfig", "Get ZK MultiSig configuration for a Nexus account")
+    .addParam("validator", "Validator contract address")
+    .addParam("account", "Nexus account address")
+    .setAction(async (taskArgs, hre) => getZKNexusConfig(
+        hre,
+        taskArgs.validator,
+        taskArgs.account
+    ));
+
+task("checkZKNexusInitialized", "Check if ZK validator is initialized for account")
+    .addParam("validator", "Validator contract address")
+    .addParam("account", "Nexus account address")
+    .setAction(async (taskArgs, hre) => checkZKNexusInitialized(
+        hre,
+        taskArgs.validator,
+        taskArgs.account
+    ));
+
 const getAccounts = function(): string[] {
     let accounts = [];
     accounts.push(vars.get("DEPLOYER_PRIVATE_KEY"));
@@ -75,15 +200,45 @@ const getAccounts = function(): string[] {
 }
 
 const config: HardhatUserConfig = {
+    paths: {
+        sources: "./contracts",
+        cache: "./cache",
+        artifacts: "./artifacts"
+    },
     solidity: {
-        version: "0.8.29",
-        settings: {
-            //viaIR: true,
-            optimizer: {
-                enabled: true,
-                runs: 20
+        compilers: [
+            {
+                version: "0.8.29",
+                settings: {
+                    //viaIR: true,
+                    optimizer: {
+                        enabled: true,
+                        runs: 20
+                    },
+                    evmVersion: "cancun"
+                }
+            },
+            {
+                version: "0.8.27",
+                settings: {
+                    optimizer: {
+                        enabled: true,
+                        runs: 200
+                    },
+                    evmVersion: "cancun"
+                }
+            },
+            {
+                version: "0.8.20",
+                settings: {
+                    optimizer: {
+                        enabled: true,
+                        runs: 200
+                    },
+                    evmVersion: "paris"
+                }
             }
-        }
+        ]
     },
     namedAccounts: {
         deployer: {
@@ -193,7 +348,6 @@ const config: HardhatUserConfig = {
             bsc: vars.get("BSCSCAN_API_KEY", ""),
             polygon: vars.get("POLYGONSCAN_API_KEY", ""),
             arbitrumOne: vars.get("ARBISCAN_API_KEY", ""),
-            mainnet: vars.get("ETHERSCAN_API_KEY", ""),
             optimisticEthereum: vars.get("OPTIMISTIC_API_KEY", ""),
             scroll: vars.get("SCROLLSCAN_API_KEY", ""),
             base: vars.get("BASESCAN_API_KEY", ""),

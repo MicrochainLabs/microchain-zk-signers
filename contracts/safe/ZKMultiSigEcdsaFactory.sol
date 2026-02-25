@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {ZKMultiSigEcdsaProxy} from "./ZKMultiSigEcdsaProxy.sol";
 import {ZKMultiSigEcdsaSingleton} from "./ZKMultiSigEcdsaSingleton.sol";
-import {IERC8039, ERC8039Constants} from "./interfaces/IERC8039.sol";
+import {IERC8039, ERC8039Constants} from "../ERC8039/IERC8039.sol";
 
 /**
  * @title ZK MultiSig ECDSA Factory
