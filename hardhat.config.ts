@@ -10,10 +10,8 @@ import { DeterministicDeploymentInfo } from "hardhat-deploy/dist/types";
 import { getSingletonFactoryInfo } from "@safe-global/safe-singleton-factory";
 
 import { createSafeWithinMicorchainProtocol, sign, prove, send, createPrivateMultiSignersFactoryContract, createPrivateMultiSignersProxyContract } from "./zksafe/zksafe";
-import { computeZKNexusAddress, getZKNexusConfig, checkZKNexusInitialized, createPrivateMultiSignersModuleFactoryContract, createZKNexusAccountV2, sendZKNexusUserOp, getAccountEntryPoint, signUserOp } from "./zknexus/zknexus";
-import { task, vars } from "hardhat/config";
+import { computeZKNexusAddress, getZKNexusConfig, checkZKNexusInitialized, createPrivateMultiSignersModuleFactoryContract, createZKNexusAccount, sendZKNexusUserOp, getAccountEntryPoint, signUserOp } from "./zknexus/zknexus";
 
-// copied from @safe-global/safe-contracts
 const deterministicDeployment = (network: string): DeterministicDeploymentInfo => {
     const info = getSingletonFactoryInfo(parseInt(network));
     if (!info) {
@@ -30,6 +28,7 @@ const deterministicDeployment = (network: string): DeterministicDeploymentInfo =
     };
 };
 
+//ZK Safe tasks
 task("send", "Send a zksafe transaction with a proof")
     .addParam("safe", "Address of the Safe")
     .addParam("to", "Address of the recipient")
@@ -75,23 +74,7 @@ task("createFactory", "Create Factor")
 
 
 
-
-task("createModuleFactory", "Create Factor")
-    .setAction(async (taskArgs, hre) => createPrivateMultiSignersModuleFactoryContract(hre));
-
-task("createZKNexusAccount", "Create a new ZK MultiSig Nexus account")
-    .addParam("privatesigners", "Comma separated list of private signers")
-    .addParam("privatethreshold", "Private threshold")
-    .addParam("modulevalidatoraddress", "Validator contract address")
-    .addParam("factoryaddress", "Factory contract address")
-    .setAction(async (taskArgs, hre) => createZKNexusAccountV2(
-        hre,
-        taskArgs.privatesigners.split(","),
-        taskArgs.privatethreshold,
-        taskArgs.modulevalidatoraddress,
-        taskArgs.factoryaddress
-    ));
-
+// ZK Nexus tasks
 task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-collected signatures")
     .addParam("account", "The Nexus account address")
     .addParam("validator", "Validator contract address")
@@ -119,10 +102,6 @@ task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-
         taskArgs.salt as `0x${string}`
     ));
 
-task("getAccountEntryPoint", "Get the EntryPoint address used by a Nexus account")
-    .addParam("account", "The Nexus account address")
-    .setAction(async (taskArgs, hre) => getAccountEntryPoint(hre, taskArgs.account));
-
 task("signUserOp", "Sign a UserOperation for a Nexus account (like zksafe sign)")
     .addParam("account", "The Nexus account address")
     .addParam("validator", "Validator contract address")
@@ -138,26 +117,27 @@ task("signUserOp", "Sign a UserOperation for a Nexus account (like zksafe sign)"
         taskArgs.data
     ));
 
-
-
-
-
-
-// ZK Nexus tasks
-/*task("createZKNexusAccount", "Create a new ZK MultiSig Nexus account")
-    .addParam("factory", "Factory contract address")
-    .addParam("validator", "Validator contract address")
-    .addParam("stateroot", "State root commitment")
-    .addParam("proof", "State validation ZK proof (hex string)")
-    .addOptionalParam("index", "Account index", "0")
+task("createZKNexusAccount", "Create a new ZK MultiSig Nexus account")
+    .addParam("privatesigners", "Comma separated list of private signers")
+    .addParam("privatethreshold", "Private threshold")
+    .addParam("modulevalidatoraddress", "Validator contract address")
+    .addParam("factoryaddress", "Factory contract address")
     .setAction(async (taskArgs, hre) => createZKNexusAccount(
         hre,
-        taskArgs.factory,
-        taskArgs.validator,
-        taskArgs.stateroot,
-        taskArgs.proof,
-        taskArgs.index
-    ));*/
+        taskArgs.privatesigners.split(","),
+        taskArgs.privatethreshold,
+        taskArgs.modulevalidatoraddress,
+        taskArgs.factoryaddress
+    ));
+
+task("createModuleFactory", "Create Factor")
+    .setAction(async (taskArgs, hre) => createPrivateMultiSignersModuleFactoryContract(hre));
+
+
+//Utility tasks
+task("getAccountEntryPoint", "Get the EntryPoint address used by a Nexus account")
+    .addParam("account", "The Nexus account address")
+    .setAction(async (taskArgs, hre) => getAccountEntryPoint(hre, taskArgs.account));
 
 task("computeZKNexusAddress", "Compute deterministic address for a ZK Nexus account")
     .addParam("factory", "Factory contract address")
