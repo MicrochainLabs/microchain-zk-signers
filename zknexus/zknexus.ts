@@ -1010,6 +1010,57 @@ export async function sendZKNexusUserOp(
         console.log("   Transaction hash:", hash);
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         console.log("   Gas used:", receipt.gasUsed.toString());
+        console.log("   Status:", receipt.status);
+        
+        // Check if transaction succeeded
+        if (receipt.status === "reverted") {
+            console.error("\n❌ Transaction REVERTED!");
+            console.error("   The transaction was mined but execution failed.");
+            
+            // Try to decode FailedOp event to get AA error code
+            const failedOpABI = parseAbi([
+                "event UserOperationRevertReason(bytes32 indexed userOpHash, address indexed sender, uint256 nonce, bytes revertReason)",
+                "event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)"
+            ]);
+            
+            for (const log of receipt.logs) {
+                try {
+                    const decoded = decodeEventLog({
+                        abi: failedOpABI,
+                        data: log.data,
+                        topics: log.topics
+                    });
+                    
+                    if (decoded.eventName === "UserOperationRevertReason") {
+                        console.error("\n   Revert reason:", decoded.args.revertReason);
+                        const revertStr = decoded.args.revertReason.toString();
+                        
+                        // Check for AA error codes in revert reason
+                        if (revertStr.includes('AA24')) {
+                            console.error("\n🔐 ERROR: AA24 - ZK Proof verification failed on-chain");
+                            console.error("   Even though the direct verifier test passed, the on-chain validation rejected the proof.");
+                            console.error("\n   Possible causes:");
+                            console.error("   1. Different verifier contract being used by validator vs direct test");
+                            console.error("   2. Public inputs constructed differently by validator");
+                            console.error("   3. State root mismatch between local and on-chain");
+                        } else if (revertStr.includes('AA25')) {
+                            console.error("\n🔢 ERROR: AA25 - Invalid nonce");
+                            console.error(`   The nonce changed between signing and submission.`);
+                        } else if (revertStr.includes('AA21')) {
+                            console.error("\n💰 ERROR: AA21 - Insufficient funds");
+                        }
+                    } else if (decoded.eventName === "UserOperationEvent") {
+                        console.error("\n   UserOp success:", decoded.args.success);
+                        console.error("   Actual gas used:", decoded.args.actualGasUsed?.toString());
+                    }
+                } catch (e) {
+                    // Not a UserOp event, skip
+                }
+            }
+            
+            throw new Error(`Transaction reverted. Hash: ${hash}. Check PolygonScan for details.`);
+        }
+        
         console.log("\n✅ UserOperation executed successfully!");
 
         return {
@@ -1025,8 +1076,23 @@ export async function sendZKNexusUserOp(
             const errorData = error.data;
             const errorMessage = error.message || '';
             
-            // AA24: signature error (check this first!)
-            if (errorData.includes('AA24') || errorMessage.includes('AA24')) {
+            // AA25: invalid nonce (check this first!)
+            if (errorData.includes('AA25') || errorMessage.includes('AA25')) {
+                console.error("\n🔢 ERROR: AA25 - Invalid account nonce");
+                console.error("   The nonce in your UserOp doesn't match the account's current nonce.");
+                console.error(`\n   Debug info:`);
+                console.error(`   - Nonce used in UserOp: ${userOp.nonce.toString()}`);
+                console.error(`   - UserOp hash signed: ${userOpHash}`);
+                console.error(`\n   This usually means:`);
+                console.error(`   1. Another transaction was sent between signing and submission`);
+                console.error(`   2. You tried to submit a UserOp with an old signature`);
+                console.error(`\n   Solution:`);
+                console.error(`   1. Check current nonce: npx hardhat checkZKNexusAccount --network polygon --account ${accountAddress} --validator ${validatorAddress}`);
+                console.error(`   2. Generate new signatures with current nonce using: npx hardhat signUserOp ...`);
+                console.error(`   3. Collect threshold signatures and submit again`);
+            }
+            // AA24: signature error
+            else if (errorData.includes('AA24') || errorMessage.includes('AA24')) {
                 console.error("\n🔐 ERROR: AA24 - ZK Proof verification failed");
                 console.error("   The proof was generated successfully but failed on-chain verification.");
                 console.error("\n   Verified locally:");
@@ -1127,7 +1193,15 @@ export async function signUserOp(
     const nonce = await entryPoint.read.getNonce([accountAddress as Address, nonceKey]) as bigint;
 
     console.log("\n📋 UserOperation Details:");
-    console.log("   Nonce:", nonce.toString());
+    console.log("   Nonce key:", nonceKey.toString());
+    console.log("   Nonce (full):", nonce.toString());
+    console.log("   Nonce (hex):", "0x" + nonce.toString(16));
+    
+    // Decode nonce to show validator and sequence
+    const nonceSequence = nonce & 0xFFFFFFFFFFFFFFFFn; // Lower 64 bits
+    const nonceValidator = nonce >> 64n; // Upper 192 bits
+    console.log("   Nonce sequence:", nonceSequence.toString());
+    console.log("   Nonce validator:", "0x" + nonceValidator.toString(16));
     console.log("   CallData length:", callData.length);
 
     // Prepare UserOperation
@@ -1200,7 +1274,12 @@ export async function createZKNexusAccount(
     factoryAddress: string,
 ) {
     const pk = vars.get("DEPLOYER_PRIVATE_KEY") as string;
-    const walletClient = await hre.viem.getWalletClient(pk as `0x${string}`);
+    const deployerAccount = privateKeyToAccount(ensureHexPrefix(pk));
+    const walletClient: WalletClient = createWalletClient({
+        account: deployerAccount,
+        //@ts-ignore
+        transport: http(hre.network.config.url)
+    });
     const publicClient = await hre.viem.getPublicClient();
     
     console.log("Creating ZK Nexus account...");
@@ -1311,4 +1390,102 @@ export async function createPrivateMultiSignersModuleFactoryContract(hre: Hardha
     console.log("ZK MultiSig Validator: ", result.zkMultiSigValidator);
     console.log("ERC-7579 Account/Module Factory: ", result.zkMultiSigValidatorFactory);
 
+}
+
+/**
+ * Check the status of a ZK Nexus account
+ */
+export async function checkZKNexusAccount(
+    hre: HardhatRuntimeEnvironment,
+    accountAddress: string,
+    validatorAddress: string
+) {
+    const publicClient = await hre.viem.getPublicClient();
+    
+    console.log("\n🔍 Checking ZK Nexus Account Status");
+    console.log("   Account:", accountAddress);
+    console.log("   Validator:", validatorAddress);
+    
+    // Check if account has code (i.e., exists)
+    const code = await publicClient.getBytecode({ address: accountAddress as Address });
+    const accountExists = code && code.length > 2;
+    console.log("\n📦 Account exists:", accountExists);
+    
+    if (!accountExists) {
+        console.error("   ❌ Account has not been deployed yet!");
+        return;
+    }
+    
+    // Check validator installation
+    console.log("\n🔧 Checking validator installation...");
+    const accountABI = parseAbi([
+        "function isModuleInstalled(uint256 moduleTypeId, address module, bytes calldata additionalContext) external view returns (bool)"
+    ]);
+    const accountContract = getContract({
+        address: accountAddress as Address,
+        abi: accountABI,
+        client: publicClient
+    });
+    
+    const MODULE_TYPE_VALIDATOR = 1;
+    const isInstalled = await accountContract.read.isModuleInstalled([
+        BigInt(MODULE_TYPE_VALIDATOR),
+        validatorAddress as Address,
+        "0x" as Hex
+    ]) as boolean;
+    
+    console.log("   Validator installed:", isInstalled);
+    
+    if (!isInstalled) {
+        console.error("   ❌ Validator is NOT installed on this account!");
+        return;
+    }
+    
+    // Check state root
+    console.log("\n🔐 Checking state root...");
+    const validatorABI = parseAbi([
+        "function accountStateRoots(address) view returns (bytes32)"
+    ]);
+    const validatorContract = getContract({
+        address: validatorAddress as Address,
+        abi: validatorABI,
+        client: publicClient
+    });
+    
+    const stateRoot = await validatorContract.read.accountStateRoots([accountAddress as Address]) as Hex;
+    console.log("   State root:", stateRoot);
+    
+    if (stateRoot === "0x0000000000000000000000000000000000000000000000000000000000000000") {
+        console.error("   ❌ State root is ZERO! Validator not properly initialized!");
+        return;
+    }
+    
+    // Check nonce
+    console.log("\n🔢 Checking nonce...");
+    const entryPointAddress = "0x0000000071727De22E5E9d8BAf0edAc6f37da032"; // v0.7
+    const entryPointABI = parseAbi([
+        "function getNonce(address,uint192) view returns (uint256)"
+    ]);
+    const entryPoint = getContract({
+        address: entryPointAddress,
+        abi: entryPointABI,
+        client: publicClient
+    });
+    
+    const validatorBits = BigInt(validatorAddress);
+    const nonceKey = validatorBits; // Validator address AS-IS for uint192 (address is 160 bits, fits in 192)
+    const nonce = await entryPoint.read.getNonce([accountAddress as Address, nonceKey]) as bigint;
+    
+    console.log("   Nonce key (validator address):", nonceKey.toString());
+    console.log("   Current nonce:", nonce.toString());
+    
+    // Check balance
+    const balance = await publicClient.getBalance({ address: accountAddress as Address });
+    console.log("\n💰 Account balance:", formatEther(balance), "POL");
+    
+    if (balance === 0n) {
+        console.warn("   ⚠️  Account has zero balance! Fund it to pay for gas.");
+    }
+    
+    console.log("\n✅ Account status check complete!");
 }

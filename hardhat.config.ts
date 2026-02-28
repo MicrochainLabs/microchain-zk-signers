@@ -10,7 +10,7 @@ import { DeterministicDeploymentInfo } from "hardhat-deploy/dist/types";
 import { getSingletonFactoryInfo } from "@safe-global/safe-singleton-factory";
 
 import { createSafeWithinMicorchainProtocol, sign, prove, send, createPrivateMultiSignersFactoryContract, createPrivateMultiSignersProxyContract } from "./zksafe/zksafe";
-import { computeZKNexusAddress, getZKNexusConfig, checkZKNexusInitialized, createPrivateMultiSignersModuleFactoryContract, createZKNexusAccount, sendZKNexusUserOp, getAccountEntryPoint, signUserOp } from "./zknexus/zknexus";
+import { computeZKNexusAddress, getZKNexusConfig, checkZKNexusInitialized, createPrivateMultiSignersModuleFactoryContract, createZKNexusAccount, sendZKNexusUserOp, getAccountEntryPoint, signUserOp, checkZKNexusAccount } from "./zknexus/zknexus";
 
 const deterministicDeployment = (network: string): DeterministicDeploymentInfo => {
     const info = getSingletonFactoryInfo(parseInt(network));
@@ -170,6 +170,15 @@ task("checkZKNexusInitialized", "Check if ZK validator is initialized for accoun
         hre,
         taskArgs.validator,
         taskArgs.account
+    ));
+
+task("checkZKNexusAccount", "Check the status of a ZK Nexus account")
+    .addParam("account", "Nexus account address")
+    .addParam("validator", "Validator contract address")
+    .setAction(async (taskArgs, hre) => checkZKNexusAccount(
+        hre,
+        taskArgs.account,
+        taskArgs.validator
     ));
 
 const getAccounts = function(): string[] {
