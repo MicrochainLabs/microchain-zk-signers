@@ -1,0 +1,11 @@
+@openzeppelin/=node_modules/@openzeppelin/
+account-abstraction/=node_modules/account-abstraction/contracts/
+@account-abstraction/=node_modules/@account-abstraction/
+solady/=node_modules/solady/src/
+forge-std/=node_modules/forge-std/src/
+@safe-global/=node_modules/@safe-global/
+@biconomy/nexus/=lib/nexus/contracts/
+sentinellist/=lib/sentinellist/src/
+solarray/=lib/solarray/src/
+erc7739Validator/=lib/erc7739Validator/src/
+excessively-safe-call/=lib/ExcessivelySafeCall/src/

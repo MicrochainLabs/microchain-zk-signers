@@ -12,7 +12,21 @@ import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
  * with different state roots and verifiers.
  * 
  */
-export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
+export default buildModule("ZKMultiSigEcdsaFactory_v4", (m) => {
+  
+  // ============================================================================
+  // CONFIGURATION: Nexus deployed contracts
+  // ============================================================================
+  
+  // Nexus account implementation address
+  const NEXUS_IMPLEMENTATION_ADDRESS = "0x000000000032ddc454c3bdcba80484ad5a798705";
+  
+  // NexusBootstrap contract address
+  const NEXUS_BOOTSTRAP_ADDRESS = "0x00000000006efb61d8c9546ff1b500de3f244ea7";
+  
+  // ============================================================================
+  // Deploy verifiers and validator
+  // ============================================================================
   
   // Deploy ZKTranscriptLib library required by HonkVerifier
   const zkTranscriptLib = m.library(
@@ -60,16 +74,29 @@ export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
   // Deploy the ERC-8039 adapter for transaction signature validation
   const erc8039TxValidation = m.contract("ZKMultiSigEcdsaProofVerifier", [txValidationHonkVerifier]);
 
+  // Deploy the ZK MultiSig Validator module
+  const zkMultiSigValidator = m.contract("ZKMultiSigValidator", [
+    erc8039PrivateStateValidation, 
+    erc8039TxValidation
+  ]);
 
-  // Deploy the Factory (which deploys the Singleton in its constructor)
-  const contractSignaturefactory = m.contract("ZKMultiSigEcdsaFactory", [erc8039PrivateStateValidation]);
+  // Deploy the Factory with all required constructor parameters:
+  // 1. implementation - Nexus account implementation address
+  // 2. zkMultiSigValidator - ZK MultiSig Validator module address
+  // 3. bootstrapper - NexusBootstrap address
+  const zkMultiSigValidatorFactory = m.contract("ZKMultiSigValidatorFactory", [
+    NEXUS_IMPLEMENTATION_ADDRESS,    // implementation
+    zkMultiSigValidator,             // zkMultiSigValidator
+    NEXUS_BOOTSTRAP_ADDRESS          // bootstrapper
+  ]);
 
   return { 
     txValidationHonkVerifier,
     erc8039TxValidation,
     privateStateValidationHonkVerifier,
     erc8039PrivateStateValidation,
-    contractSignaturefactory
+    zkMultiSigValidator,
+    zkMultiSigValidatorFactory
   };
 });
 
