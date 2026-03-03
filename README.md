@@ -49,18 +49,18 @@ Contracts that adapt specific proof system verifiers (HONK, Groth16, etc.) to th
 
 1. Setup Phase:
    ┌──────────────┐
-   │ Signers pick │──────► Generate state root = Hash(Hash(signers + threshold), salt)
-   │ M-of-N setup │         ↑ Salt prevents brute-force attacks
+   │ Signers pick │──────► Generate state root = Hash(signers + threshold)
+   │ M-of-N setup │
    └──────────────┘
                              ↓
                     Generate ZK proof of valid state
-                    (proves signers + threshold + salt → state root)
+                    (proves signers + threshold → state root)
                              ↓
                     Deploy proxy via factory
                              ↓
                     ┌─────────────────┐
                     │ Proxy deployed  │
-                    │ State: 0xabc... │ ← Only hash stored, signers + salt private
+                    │ State: 0xabc... │ ← Only hash stored, signers private
                     └─────────────────┘
 
 2. Transaction Execution:
@@ -100,7 +100,6 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │  Private Inputs:                                             │
 │    • signers_root: Field         (Merkle root of signers)   │
 │    • threshold: u8                (M-of-N threshold)         │
-│    • salt: Field                  (Privacy protection)       │
 │                                                               │
 │  Public Inputs:                                              │
 │    • state_root: Field            (On-chain commitment)      │
@@ -111,25 +110,21 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  1. Validate inputs are non-zero:                            │
 │     assert(signers_root != 0)                               │
-│     assert(salt != 0)                                        │
 │                                                               │
 │  2. Validate threshold bounds:                               │
 │     assert(threshold > 0)                                    │
 │     assert(threshold <= MAX_THRESHOLD)                       │
 │     assert(threshold <= MAX_SIGNERS)                         │
 │                                                               │
-│  3. Compute preliminary state root:                          │
+│  3. Compute state root:                                      │
 │     threshold_hash = Poseidon1([threshold])                  │
-│     preliminary_root = MerkleRoot([                          │
+│     state_root = MerkleRoot([                                │
 │         signers_root,                                        │
 │         threshold_hash                                       │
 │     ])                                                       │
 │                                                               │
-│  4. Mix in salt for final state root:                        │
-│     final_state_root = Poseidon2([preliminary_root, salt])   │
-│                                                               │
-│  5. Assert correctness:                                      │
-│     assert(final_state_root == state_root)                   │
+│  4. Assert correctness:                                      │
+│     assert(computed_state_root == state_root)                │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
                            │
@@ -157,7 +152,6 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │    • merkle_proof_siblings: [[Field; DEPTH]; MAX_SIGNERS]   │
 │    • signers_root: Field                                     │
 │    • threshold: u8                                           │
-│    • salt: Field                                             │
 │                                                               │
 │  Public Inputs:                                              │
 │    • txn_hash: [u8; 32]          (Transaction hash to sign) │
@@ -206,12 +200,11 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  8. Reconstruct and verify state root:                       │
 │     threshold_hash = Poseidon1([threshold])                  │
-│     preliminary_root = MerkleRoot([                          │
+│     state_root = MerkleRoot([                                │
 │         signers_root,                                        │
 │         threshold_hash                                       │
 │     ])                                                       │
-│     final_state_root = Poseidon2([preliminary_root, salt])   │
-│     assert(final_state_root == state_root)                   │
+│     assert(computed_state_root == state_root)                │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
                            │
@@ -228,7 +221,6 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 - **Signature Ordering**: Requires addresses to be in strictly increasing order to prevent signature reuse (same approach as Safe contracts)
 - **Address Derivation**: Follows Ethereum's address computation: `keccak256(uncompressed_pubkey)[12:32]`
 - **Merkle Tree**: Uses Poseidon hash for ZK-friendly tree operations
-- **Salt Protection**: Same salt used in both circuits to link configuration to execution while preventing brute-force attacks
 
 
 ### Privacy Properties
@@ -238,7 +230,6 @@ The protocol maintains complete privacy of:
 - Which specific signers authorized each transaction
 - Total number of signers in the set
 - The threshold requirement (M-of-N)
-- The random salt value
 - Historical signing patterns
 
 **Only publicly visible:**
@@ -250,31 +241,17 @@ The protocol maintains complete privacy of:
 
 ### State Root Construction
 
-The state root is computed with a privacy-protecting salt to prevent brute-force attacks:
+The state root is a cryptographic commitment to the signer configuration:
 
 ```
-preliminary_state_root = MerkleRoot([signers_merkle_root, Hash(threshold)])
-final_state_root = Hash(preliminary_state_root, salt)
+state_root = MerkleRoot([signers_merkle_root, Hash(threshold)])
 ```
 
 Where:
 - `signers_merkle_root` is the Merkle root of sorted signer public keys
 - `threshold` is the M-of-N signature requirement
-- `salt` is a random value that prevents attackers from brute-forcing the configuration
 
-**Why salt at the state level?**
-
-The salt is added **after** computing the preliminary state root rather than inside the signers tree. This design choice is critical because:
-
-1. **Preserves signature verification**: The signature circuit needs the exact `signers_merkle_root` to verify Merkle proofs. Adding salt to the signers tree would break all Merkle proof validations.
-
-2. **Separation of concerns**: 
-   - Signers tree = identity (who can sign)
-   - State root = configuration (signers + threshold + deployment salt)
-
-3. **Single salt**: One salt protects both circuits without requiring modifications to signature verification logic.
-
-4. **Prevents brute-force attacks**: Even with a known threshold and small signer set, attackers cannot reverse the state root without the random salt.
+The state root serves as a public commitment to the private signer configuration, allowing verification without revealing individual signer identities or the threshold.
 
 
 ### Zero-Knowledge Circuits
@@ -283,15 +260,15 @@ The protocol uses two ZK circuits:
 
 1. **State Validation Circuit**: Proves that a state root corresponds to a valid configuration
    - Public inputs: `state_root`
-   - Private inputs: `signers[]`, `threshold`, `salt`
-   - Proves: `state_root = Hash(Hash(MerkleRoot(signers), Hash(threshold)), salt)`
-   - Validates: threshold bounds, non-zero signers root, non-zero salt
+   - Private inputs: `signers[]`, `threshold`
+   - Proves: `state_root = MerkleRoot([MerkleRoot(signers), Hash(threshold)])`
+   - Validates: threshold bounds, non-zero signers root
 
 2. **Transaction Validation Circuit**: Proves sufficient signatures without revealing signers
    - Public inputs: `transaction_hash`, `state_root`
-   - Private inputs: `signers[]`, `signatures[]`, `merkle_proofs[]`, `threshold`, `salt`
+   - Private inputs: `signers[]`, `signatures[]`, `merkle_proofs[]`, `threshold`
    - Proves: At least `threshold` valid ECDSA signatures from signers in the Merkle tree
-   - Note: Uses the same salt to reconstruct state root for verification
+   - Note: Reconstructs state root to verify against on-chain commitment
 
 ### ERC-8039 Proof Verification Interface
 
@@ -502,7 +479,7 @@ npx hardhat --network <mainnet|sepolia|gnosis|etc> sign --safe <safe address> --
 Having collected all the signatures, we need to generate a proof. This is done with the `prove` hardhat task.
 
 ```
-npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2> <sinagure3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --signersaddressesformat 0 --salt <salt value> 
+npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2> <sinagure3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --signersaddressesformat 0 
 ```
 
 Proving might take a couple of minutes, and would return a large hex string starting with 0x.  This is the prove that needs to be sent to zkSafe along with the transaction.
@@ -551,8 +528,7 @@ const zkProof = await generateZKProof(
     safeTxHash,
     privateSigners,
     signatures,
-    stateRoot,
-    salt
+    stateRoot
 );
 
 // Add ZK proof as signature for the proxy owner
@@ -655,7 +631,7 @@ Microchain ZK Signers integrates with [Nexus](https://biconomy.io) smart account
 The ZKMultiSigValidator module allows Nexus accounts to validate transactions using zero-knowledge proofs:
 
 1. **Module Installation**: Install the `ZKMultiSigValidator` module on a Nexus account with configuration:
-   - `stateRoot`: Cryptographic commitment to your private signer set + threshold + salt
+   - `stateRoot`: Cryptographic commitment to your private signer set + threshold
    - `verifierAddress`: ERC8039 proof verifier contract
 
 2. **UserOperation Validation**: When submitting a UserOp:
@@ -696,7 +672,7 @@ const factory = await ethers.deployContract("ZKMultiSigValidatorFactory", [
 ]);
 
 // 2. Generate state root from your private configuration
-const stateRoot = computeStateRoot(signers, threshold, salt);
+const stateRoot = computeStateRoot(signers, threshold);
 
 // 3. Create Nexus account with ZK validator
 const accountAddress = await factory.createAccount(
@@ -737,10 +713,9 @@ const privateSigners = [
     "0x9876...5432"   // Signer 3 address
 ];
 const threshold = 2;  // 2-of-3 required
-const salt = randomBytes(32);  // Privacy protection
 
 // Generate state root commitment
-const stateRoot = await generateStateRoot(privateSigners, threshold, salt);
+const stateRoot = await generateStateRoot(privateSigners, threshold);
 
 // Deploy Nexus account via factory
 const nexusAccount = await factory.createAccount(
@@ -808,8 +783,7 @@ const zkProof = await generateTransactionProof({
     txHash: userOpHash,
     privateSigners: privateSigners,
     signatures: [sig1, sig2, nullSignature],  // Fill unused slots with null
-    threshold: threshold,
-    salt: salt
+    threshold: threshold
 });
 
 // 7. Add proof as signature
@@ -837,8 +811,7 @@ const zkProof = await generateTransactionProof({
     txHash: messageHash,
     privateSigners: privateSigners,
     signatures: [...signatures, nullSignature],
-    threshold: threshold,
-    salt: salt
+    threshold: threshold
 });
 
 // Verify on-chain
@@ -852,8 +825,7 @@ const isValid = await nexusAccount.isValidSignature(messageHash, zkProof);
 // Generate new configuration with different signers
 const newSigners = ["0xnew1...", "0xnew2...", "0xnew3..."];
 const newThreshold = 2;
-const newSalt = randomBytes(32);
-const newStateRoot = await generateStateRoot(newSigners, newThreshold, newSalt);
+const newStateRoot = await generateStateRoot(newSigners, newThreshold);
 
 // Prepare update call to validator
 const updateCalldata = zkValidator.interface.encodeFunctionData(
@@ -1028,7 +1000,7 @@ const largeTxUserOp = {
 
 ### Security Considerations
 
-1. **State Root Generation**: Must be computed correctly off-chain with proper randomness for salt
+1. **State Root Generation**: Must be computed correctly off-chain
 2. **Proof Generation**: Requires secure environment to generate proofs with private signer keys
 3. **Verifier Trust**: The ERC8039 verifier contract must be audited and trusted
 4. **Gas Costs**: ZK proof verification is more expensive than simple ECDSA (~6-10x gas)

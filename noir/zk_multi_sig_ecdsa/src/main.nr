@@ -36,7 +36,7 @@ fn cmp_gt<let N: u32>(a: [u8; N], b: [u8; N]) -> bool {
 }
 
 /// Verify if the signatures are valid and the signers are in the owners list.
-fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold: u8, merkle_proof_length: [u32; MAX_SIGNERS], merkle_proof_indices: [[u1; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], merkle_proof_siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], signatures: [Signature; MAX_SIGNERS], salt: Field, txn_hash: Hash, on_chain_state_root: Field) {
+fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold: u8, merkle_proof_length: [u32; MAX_SIGNERS], merkle_proof_indices: [[u1; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], merkle_proof_siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], signatures: [Signature; MAX_SIGNERS], txn_hash: Hash, on_chain_state_root: Field) {
     
     let mut curr_owner = [0; 20];
     let mut num_verified_signatures = 0;
@@ -92,15 +92,14 @@ fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold
     // Compute state root: depth 1 tree with signers_root (left) and threshold (right)
     // Hash threshold for consistency with other leaf values in the Merkle tree
     let threshold_hash = poseidon1([threshold as Field]);
-    let preliminary_state_root = binary_merkle_root(
+    let state_root = binary_merkle_root(
         poseidon2,
         signers_root,
         MICROCHAIN_OWNERSHIP_STATE_MAX_DEPTH,
         [0],
         [threshold_hash]
     );
-    let final_state_root = poseidon2([preliminary_state_root, salt]);
-    assert(on_chain_state_root == final_state_root);
+    assert(on_chain_state_root == state_root);
 
 }
 
@@ -112,10 +111,9 @@ fn main(
     indices: [[u1; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
     siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
     signatures: [Signature; MAX_SIGNERS], 
-    salt: Field,
     txn_hash: pub Hash, 
     on_chain_state_root: pub Field) {
-    verify_signers(signers, signers_root, threshold, merkle_proof_length, indices, siblings, signatures, salt, txn_hash, on_chain_state_root);
+    verify_signers(signers, signers_root, threshold, merkle_proof_length, indices, siblings, signatures, txn_hash, on_chain_state_root);
 }
 
 #[test]
@@ -269,8 +267,7 @@ fn test_main() {
         [ 0, 0, 0, 0]
     ];
 
-    let salt = 1;
     let state_root = 10223786790855367822232839749406742084971735911793673331153158573476372880461;
 
-    main(signers, threshold, signers_root, merkle_proof_length, indices, siblings, signatures, salt, txn_hash, state_root)
+    main(signers, threshold, signers_root, merkle_proof_length, indices, siblings, signatures, txn_hash, state_root)
 }

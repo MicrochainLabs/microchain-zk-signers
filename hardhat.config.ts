@@ -1,5 +1,5 @@
 import { HardhatUserConfig } from "hardhat/types";
-//import { task, vars } from "hardhat/config";
+import { task, vars } from "hardhat/config";
 import "hardhat-deploy";
 import "@nomicfoundation/hardhat-toolbox-viem";
 import "@nomicfoundation/hardhat-ignition";
@@ -45,8 +45,7 @@ task("prove", "Prove a zksafe transaction")
     .addParam("privatesigners", "Comma separated list of private signers")
     .addParam("privatethreshold", "Private threshold")
     .addParam("signersaddressesformat", "Owner address format: normal or hash")
-    .addParam("salt", "Salt")
-    .setAction(async (taskArgs, hre) => prove(hre, taskArgs.safe, taskArgs.txhash, taskArgs.signatures, taskArgs.privatethreshold, taskArgs.privatesigners.split(","), taskArgs.signersaddressesformat, taskArgs.salt));
+    .setAction(async (taskArgs, hre) => prove(hre, taskArgs.safe, taskArgs.txhash, taskArgs.signatures, taskArgs.privatethreshold, taskArgs.privatesigners.split(","), taskArgs.signersaddressesformat));
     
 task("sign", "Sign Safe transaction")
     .addParam("safe", "Address of the Safe")
@@ -86,7 +85,6 @@ task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-
     .addParam("userophash", "UserOp hash from signUserOp")
     .addParam("privatesigners", "Comma separated list of private signer addresses")
     .addParam("privatethreshold", "Private threshold")
-    .addParam("salt", "Salt used during account creation")
     .setAction(async (taskArgs, hre) => sendZKNexusUserOp(
         hre,
         taskArgs.account,
@@ -98,8 +96,7 @@ task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-
         taskArgs.signatures.split(",") as `0x${string}`[],
         taskArgs.userophash as `0x${string}`,
         taskArgs.privatesigners.split(","),
-        parseInt(taskArgs.privatethreshold),
-        taskArgs.salt as `0x${string}`
+        parseInt(taskArgs.privatethreshold)
     ));
 
 task("signUserOp", "Sign a UserOperation for a Nexus account (like zksafe sign)")

@@ -118,7 +118,7 @@ export async function send(hre: any, safeAddr: string, to: string, value: string
 
 }
 
-export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateThreshold: number, privateSigners: string[], signersAddressesFormat: number, salt: string) {
+export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateThreshold: number, privateSigners: string[], signersAddressesFormat: number) {
     // Initialize Safe - we need it to prepare the witness (owners/threeshold) from onchain data.
     const safe = await Safe.init({
         provider: hre.network.config.url,
@@ -165,12 +165,12 @@ export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, tx
     console.log("Verifier address:", verifierAddress);
     console.log("Private threshold:", privateThreshold);
         
-    const proofData = await proveTransactionSignatures(hre, signatures as Hex[], txHash as Hex, privateSigners, signersAddressesFormat, toHex(BigInt(privateThreshold)), salt as `0x${string}`, onChainStateRoot as Hex);
+    const proofData = await proveTransactionSignatures(hre, signatures as Hex[], txHash as Hex, privateSigners, signersAddressesFormat, toHex(BigInt(privateThreshold)), onChainStateRoot as Hex);
     console.log("Proof: ", toHex(proofData.proof));
     console.log("Public inputs:", proofData.publicInputs);
 }
 
-export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, signatures: Hex[], txHash: Hex, privateSigners: string[], signersAddressesFormat: number, privateThreshold: Hex, salt: Hex, onChainStateRoot: Hex) {
+export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, signatures: Hex[], txHash: Hex, privateSigners: string[], signersAddressesFormat: number, privateThreshold: Hex, onChainStateRoot: Hex) {
         // Load compiled circuit directly from filesystem (bypassing hardhat-noir)
         const circuitPath = join(process.cwd(), "noir", "target", "zk_multi_sig_ecdsa.json");
         const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
@@ -219,14 +219,12 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
                 throw new Error("Invalid owner addresses format variable value (0: Normal address) or (1: Poseidon Hash address)");
         }
         
-        // Compute preliminary state root (signers + threshold)
-        const preliminaryStateTree = new LeanIMT(hash);
-        preliminaryStateTree.insert(signersTree.root);
-        preliminaryStateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-        
-        // Mix salt into final state root (same as deployment)
-        const finalStateRoot = poseidon.hash([preliminaryStateTree.root, BigInt(salt)]);
-        console.log("Computed state root (with salt):", toHex(finalStateRoot));
+        // Compute state root (signers + threshold)
+        const stateTree = new LeanIMT(hash);
+        stateTree.insert(signersTree.root);
+        stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
+        const finalStateRoot = stateTree.root;
+        console.log("Computed state root:", toHex(finalStateRoot));
 
         if(onChainStateRoot != toHex(finalStateRoot)){
             throw new Error("Invalid state tree root");
@@ -267,8 +265,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
             signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 5, nil_signature),
             txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
-            on_chain_state_root: toHex(finalStateRoot),
-            salt: salt
+            on_chain_state_root: toHex(finalStateRoot)
         };
 
         // Generate witness using native Noir
@@ -313,7 +310,6 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
 export async function proveStateConfiguration(
     signersRoot: Hex,
     threshold: number,
-    salt: Hex,
     stateRoot: Hex
 ) {
     // Load compiled state validation circuit
@@ -332,11 +328,10 @@ export async function proveStateConfiguration(
     console.log("State validation UltraHonk backend initialized");
 
     try {
-        // Prepare circuit inputs (now includes salt)
+        // Prepare circuit inputs
         const input = {
             signers_root: signersRoot,
             threshold: threshold,
-            salt: salt,
             on_chain_state_root: pad(stateRoot, { size: 32 })
         };
 
@@ -502,20 +497,12 @@ export async function createPrivateMultiSignersProxyContract(
         signersTree.insert(poseidon.hash([BigInt(privateSigner)]));
     }
 
-    // Build preliminary state tree (signers + threshold)
-    const preliminaryStateTree = new LeanIMT(hash);
-    preliminaryStateTree.insert(signersTree.root);
-    preliminaryStateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-
-    // Generate random salt for privacy protection
-    const saltBytes = crypto.randomBytes(32);
-    const SNARK_SCALAR_FIELD = BigInt("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
-    let salt = BigInt('0x' + saltBytes.toString('hex'));
-    salt %= SNARK_SCALAR_FIELD;
-    const saltHex = toHex(salt) as Hex;
-
-    // Mix salt into final state root (Approach B: Salt Mixed at End)
-    const finalStateRoot = poseidon.hash([preliminaryStateTree.root, salt]);
+    // Build state tree (signers + threshold)
+    const stateTree = new LeanIMT(hash);
+    stateTree.insert(signersTree.root);
+    stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
+    
+    const finalStateRoot = stateTree.root;
 
     const signersRootHex = toHex(signersTree.root) as Hex;
     const stateRootHex = toHex(finalStateRoot) as Hex;
@@ -523,15 +510,13 @@ export async function createPrivateMultiSignersProxyContract(
     console.log("\n📊 State Configuration:");
     console.log("   Private signers root:", signersRootHex);
     console.log("   Private threshold:", privateThreshold);
-    console.log("   Salt:", saltHex);
-    console.log("   State root (with salt):", stateRootHex);
+    console.log("   State root:", stateRootHex);
 
     // Generate state validation proof
     console.log("\n🔐 Generating state validation proof...");
     const stateValidationProofData = await proveStateConfiguration(
         signersRootHex,
         privateThreshold,
-        saltHex,
         stateRootHex
     );
     console.log("✅ State validation proof generated");
@@ -567,11 +552,8 @@ export async function createPrivateMultiSignersProxyContract(
     console.log("\n✅ Signer proxy created successfully!");
     console.log("   Signer address: ", predictedSignerAddress);
     console.log("   State root:", stateRootHex);
-    console.log("   Salt: ", salt);
-    console.log("   SaltHex: ", saltHex);
     console.log("   Gas used:", receipt.gasUsed.toString());
     console.log("   Block number:", receipt.blockNumber.toString());
-    console.log("\n💡 Important: Save the salt value above! It's needed for signature verification.");
 
     /*return {
         signerAddress: predictedSignerAddress,
