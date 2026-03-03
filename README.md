@@ -49,18 +49,18 @@ Contracts that adapt specific proof system verifiers (HONK, Groth16, etc.) to th
 
 1. Setup Phase:
    ┌──────────────┐
-   │ Signers pick │──────► Generate state root = Hash(Hash(signers + threshold), salt)
-   │ M-of-N setup │         ↑ Salt prevents brute-force attacks
+   │ Signers pick │──────► Generate state root = Hash(signers + threshold)
+   │ M-of-N setup │
    └──────────────┘
                              ↓
                     Generate ZK proof of valid state
-                    (proves signers + threshold + salt → state root)
+                    (proves signers + threshold → state root)
                              ↓
                     Deploy proxy via factory
                              ↓
                     ┌─────────────────┐
                     │ Proxy deployed  │
-                    │ State: 0xabc... │ ← Only hash stored, signers + salt private
+                    │ State: 0xabc... │ ← Only hash stored, signers private
                     └─────────────────┘
 
 2. Transaction Execution:
@@ -100,7 +100,6 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │  Private Inputs:                                             │
 │    • signers_root: Field         (Merkle root of signers)   │
 │    • threshold: u8                (M-of-N threshold)         │
-│    • salt: Field                  (Privacy protection)       │
 │                                                               │
 │  Public Inputs:                                              │
 │    • state_root: Field            (On-chain commitment)      │
@@ -111,25 +110,21 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  1. Validate inputs are non-zero:                            │
 │     assert(signers_root != 0)                               │
-│     assert(salt != 0)                                        │
 │                                                               │
 │  2. Validate threshold bounds:                               │
 │     assert(threshold > 0)                                    │
 │     assert(threshold <= MAX_THRESHOLD)                       │
 │     assert(threshold <= MAX_SIGNERS)                         │
 │                                                               │
-│  3. Compute preliminary state root:                          │
+│  3. Compute state root:                                      │
 │     threshold_hash = Poseidon1([threshold])                  │
-│     preliminary_root = MerkleRoot([                          │
+│     state_root = MerkleRoot([                                │
 │         signers_root,                                        │
 │         threshold_hash                                       │
 │     ])                                                       │
 │                                                               │
-│  4. Mix in salt for final state root:                        │
-│     final_state_root = Poseidon2([preliminary_root, salt])   │
-│                                                               │
-│  5. Assert correctness:                                      │
-│     assert(final_state_root == state_root)                   │
+│  4. Assert correctness:                                      │
+│     assert(computed_state_root == state_root)                │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
                            │
@@ -157,7 +152,6 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │    • merkle_proof_siblings: [[Field; DEPTH]; MAX_SIGNERS]   │
 │    • signers_root: Field                                     │
 │    • threshold: u8                                           │
-│    • salt: Field                                             │
 │                                                               │
 │  Public Inputs:                                              │
 │    • txn_hash: [u8; 32]          (Transaction hash to sign) │
@@ -206,12 +200,11 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  8. Reconstruct and verify state root:                       │
 │     threshold_hash = Poseidon1([threshold])                  │
-│     preliminary_root = MerkleRoot([                          │
+│     state_root = MerkleRoot([                                │
 │         signers_root,                                        │
 │         threshold_hash                                       │
 │     ])                                                       │
-│     final_state_root = Poseidon2([preliminary_root, salt])   │
-│     assert(final_state_root == state_root)                   │
+│     assert(computed_state_root == state_root)                │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
                            │
@@ -228,7 +221,6 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 - **Signature Ordering**: Requires addresses to be in strictly increasing order to prevent signature reuse (same approach as Safe contracts)
 - **Address Derivation**: Follows Ethereum's address computation: `keccak256(uncompressed_pubkey)[12:32]`
 - **Merkle Tree**: Uses Poseidon hash for ZK-friendly tree operations
-- **Salt Protection**: Same salt used in both circuits to link configuration to execution while preventing brute-force attacks
 
 
 ### Privacy Properties
@@ -238,7 +230,6 @@ The protocol maintains complete privacy of:
 - Which specific signers authorized each transaction
 - Total number of signers in the set
 - The threshold requirement (M-of-N)
-- The random salt value
 - Historical signing patterns
 
 **Only publicly visible:**
@@ -250,31 +241,17 @@ The protocol maintains complete privacy of:
 
 ### State Root Construction
 
-The state root is computed with a privacy-protecting salt to prevent brute-force attacks:
+The state root is a cryptographic commitment to the signer configuration:
 
 ```
-preliminary_state_root = MerkleRoot([signers_merkle_root, Hash(threshold)])
-final_state_root = Hash(preliminary_state_root, salt)
+state_root = MerkleRoot([signers_merkle_root, Hash(threshold)])
 ```
 
 Where:
 - `signers_merkle_root` is the Merkle root of sorted signer public keys
 - `threshold` is the M-of-N signature requirement
-- `salt` is a random value that prevents attackers from brute-forcing the configuration
 
-**Why salt at the state level?**
-
-The salt is added **after** computing the preliminary state root rather than inside the signers tree. This design choice is critical because:
-
-1. **Preserves signature verification**: The signature circuit needs the exact `signers_merkle_root` to verify Merkle proofs. Adding salt to the signers tree would break all Merkle proof validations.
-
-2. **Separation of concerns**: 
-   - Signers tree = identity (who can sign)
-   - State root = configuration (signers + threshold + deployment salt)
-
-3. **Single salt**: One salt protects both circuits without requiring modifications to signature verification logic.
-
-4. **Prevents brute-force attacks**: Even with a known threshold and small signer set, attackers cannot reverse the state root without the random salt.
+The state root serves as a public commitment to the private signer configuration, allowing verification without revealing individual signer identities or the threshold.
 
 
 ### Zero-Knowledge Circuits
@@ -283,15 +260,15 @@ The protocol uses two ZK circuits:
 
 1. **State Validation Circuit**: Proves that a state root corresponds to a valid configuration
    - Public inputs: `state_root`
-   - Private inputs: `signers[]`, `threshold`, `salt`
-   - Proves: `state_root = Hash(Hash(MerkleRoot(signers), Hash(threshold)), salt)`
-   - Validates: threshold bounds, non-zero signers root, non-zero salt
+   - Private inputs: `signers[]`, `threshold`
+   - Proves: `state_root = MerkleRoot([MerkleRoot(signers), Hash(threshold)])`
+   - Validates: threshold bounds, non-zero signers root
 
 2. **Transaction Validation Circuit**: Proves sufficient signatures without revealing signers
    - Public inputs: `transaction_hash`, `state_root`
-   - Private inputs: `signers[]`, `signatures[]`, `merkle_proofs[]`, `threshold`, `salt`
+   - Private inputs: `signers[]`, `signatures[]`, `merkle_proofs[]`, `threshold`
    - Proves: At least `threshold` valid ECDSA signatures from signers in the Merkle tree
-   - Note: Uses the same salt to reconstruct state root for verification
+   - Note: Reconstructs state root to verify against on-chain commitment
 
 ### ERC-8039 Proof Verification Interface
 
@@ -315,31 +292,71 @@ This allows swapping proof systems without changing the core protocol contracts.
 
 ### Installation
 
+Clone the repository and install dependencies:
+
 ```bash
+# Clone the repository
+git clone https://github.com/microchainlabs/microchain-zk-signers.git
+cd microchain-zk-signers
+
+# Initialize Foundry dependencies (git submodules)
+forge install
+
+# Install npm dependencies
 pnpm install
 ```
 
+**Prerequisites:**
+- [Node.js](https://nodejs.org/) v18 or later
+- [pnpm](https://pnpm.io/) package manager
+- [Foundry](https://book.getfoundry.sh/getting-started/installation) (for Solidity compilation)
+- [Nargo](https://noir-lang.org/docs/getting_started/installation/) (for Noir circuit compilation)
+- [Barretenberg](https://github.com/AztecProtocol/aztec-packages/tree/master/barretenberg) (`bb` CLI - for proof generation and verifier generation)
+
+For detailed setup instructions, see [DEVELOPMENT_SETUP.md](DEVELOPMENT_SETUP.md).
+
 ### Compilation
 
-Compile Noir circuits:
+**Important**: Compile in this order, as Solidity verifiers are generated from Noir circuits.
+
+1. **Compile Noir circuits:**
 ```bash
 cd noir
 nargo compile
+cd ..
 ```
 
-Compile Solidity contracts:
-```bash
-npx hardhat compile
-```
-
-### Solidity Verifier Generation
-
+2. **Generate Solidity verifiers** (optional - needed if circuits changed):
 ```bash
 cd noir
 bb write_vk -b ./target/zk_multi_sig_ecdsa.json -o ./target/zk_multi_sig_ecdsa --oracle_hash keccak
 bb write_vk -b ./target/zk_multi_sig_ecdsa_private_state_validation.json -o ./target/zk_multi_sig_ecdsa_private_state_validation --oracle_hash keccak
 bb write_solidity_verifier -k ./target/zk_multi_sig_ecdsa/vk -o ./target/zk_multi_sig_ecdsa.sol
 bb write_solidity_verifier -k ./target/zk_multi_sig_ecdsa_private_state_validation/vk -o ./target/zk_multi_sig_ecdsa_private_state_validation.sol
+cd ..
+```
+
+3. **Compile Solidity contracts:**
+```bash
+# Using Hardhat (recommended for development)
+npx hardhat compile
+
+# Or using Foundry (faster compilation)
+forge build
+```
+
+The project uses both Hardhat and Foundry with shared `remappings.txt` for import resolution. See [DEVELOPMENT_SETUP.md](DEVELOPMENT_SETUP.md) for detailed setup instructions.
+
+### Testing
+
+Run tests with Hardhat:
+```bash
+npx hardhat test
+```
+
+Or with Foundry (faster):
+```bash
+forge test
 ```
 
 ## Use Cases
@@ -462,7 +479,7 @@ npx hardhat --network <mainnet|sepolia|gnosis|etc> sign --safe <safe address> --
 Having collected all the signatures, we need to generate a proof. This is done with the `prove` hardhat task.
 
 ```
-npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2> <sinagure3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --signersaddressesformat 0 --salt <salt value> 
+npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2> <sinagure3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --signersaddressesformat 0 
 ```
 
 Proving might take a couple of minutes, and would return a large hex string starting with 0x.  This is the prove that needs to be sent to zkSafe along with the transaction.
@@ -511,8 +528,7 @@ const zkProof = await generateZKProof(
     safeTxHash,
     privateSigners,
     signatures,
-    stateRoot,
-    salt
+    stateRoot
 );
 
 // Add ZK proof as signature for the proxy owner
@@ -564,7 +580,449 @@ await safe.addOwnerWithThreshold(proxyAddress, newThreshold);
 - [Safe Protocol Kit Documentation](https://docs.safe.global/sdk/protocol-kit)
 - [ERC-1271 Specification](https://eips.ethereum.org/EIPS/eip-1271)
 
-## Nexus Integration(ERC-7579 Module)
+## Nexus Integration (ERC-7579 Module)
+
+Microchain ZK Signers integrates with [Nexus](https://biconomy.io) smart accounts as an **ERC-7579 validator module**. This enables Nexus accounts to use privacy-preserving ZK multi-signature validation instead of traditional single-signer or public multi-sig validators.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│              Nexus Smart Account                          │
+│           (ERC-7579 + ERC-4337)                          │
+│                                                           │
+│  Validators:                                             │
+│  ├─ Default Validator (immutable)                       │
+│  └─ ZKMultiSigValidator ◄── Privacy-preserving M-of-N   │
+│                                                           │
+│  Executors: [optional custom modules]                   │
+│  Hooks: [optional custom modules]                       │
+└──────────────────────────────────────────────────────────┘
+                      │
+                      │ Validates UserOps & Signatures
+                      ▼
+┌──────────────────────────────────────────────────────────┐
+│         ZKMultiSigValidator Module                       │
+│                                                           │
+│  Configuration per account:                              │
+│  • state_root: bytes32 (commitment to signers)          │
+│  • verifier: address (ERC8039 proof verifier)           │
+│                                                           │
+│  Validation Methods:                                     │
+│  • validateUserOp() - ERC-4337 validation               │
+│  • isValidSignatureWithSender() - ERC-1271 validation   │
+└──────────────────────────────────────────────────────────┘
+                      │
+                      │ Verifies ZK proofs
+                      ▼
+┌──────────────────────────────────────────────────────────┐
+│      ERC8039 Proof Verifier                              │
+│   (ZKMultiSigEcdsaProofVerifier)                        │
+│                                                           │
+│  Verifies that:                                          │
+│  • M-of-N signers approved the transaction              │
+│  • All signers are in authorized set (state_root)       │
+│  • Without revealing which signers approved             │
+└──────────────────────────────────────────────────────────┘
+```
+
+### How It Works
+
+The ZKMultiSigValidator module allows Nexus accounts to validate transactions using zero-knowledge proofs:
+
+1. **Module Installation**: Install the `ZKMultiSigValidator` module on a Nexus account with configuration:
+   - `stateRoot`: Cryptographic commitment to your private signer set + threshold
+   - `verifierAddress`: ERC8039 proof verifier contract
+
+2. **UserOperation Validation**: When submitting a UserOp:
+   - Specify the ZKMultiSigValidator in the nonce
+   - Include a ZK proof in the signature field
+   - The proof demonstrates M-of-N signers approved without revealing identities
+
+3. **ERC-1271 Signing**: The Nexus account can sign arbitrary messages:
+   - Generate ZK proof of multi-sig approval
+   - Off-chain signatures remain private
+   - On-chain verification via `isValidSignature()`
+
+### Key Features
+
+- 🎯 **Modular Integration**: Works alongside other Nexus validators and modules
+- 🔐 **Privacy-First**: Signer identities never revealed on-chain
+- ⚡ **ERC-4337 Compatible**: Full Account Abstraction support with gas sponsorship
+- 🔌 **Proof System Agnostic**: Uses ERC8039 interface for any ZK proof system
+- 🛡️ **Battle-Tested**: Builds on Biconomy's audited Nexus framework
+- 🔄 **Upgradeable**: Change state root to rotate signers without deploying new account
+
+### Deployment Options
+
+#### Option 1: Factory Deployment (Recommended)
+
+Use `ZKMultiSigValidatorFactory` to deploy a Nexus account with ZK validator pre-installed:
+
+```typescript
+import { ZKMultiSigValidatorFactory } from "./contracts/factory/ZKMultiSigValidatorFactory";
+
+// 1. Deploy factory (once)
+const factory = await ethers.deployContract("ZKMultiSigValidatorFactory", [
+    nexusImplementation,
+    factoryOwner,
+    zkMultiSigValidator,
+    bootstrapper,
+    registry  // optional, can be address(0)
+]);
+
+// 2. Generate state root from your private configuration
+const stateRoot = computeStateRoot(signers, threshold);
+
+// 3. Create Nexus account with ZK validator
+const accountAddress = await factory.createAccount(
+    stateRoot,
+    verifierAddress,
+    0,  // index
+    [],  // attesters (empty if no registry)
+    0   // threshold (0 if no registry)
+);
+```
+
+#### Option 2: Install on Existing Nexus
+
+Install the ZK validator on an existing Nexus account:
+
+```solidity
+// From the Nexus account (via UserOp)
+bytes memory validatorInitData = abi.encode(stateRoot, verifierAddress);
+
+nexusAccount.installModule(
+    MODULE_TYPE_VALIDATOR,  // Type 1
+    zkMultiSigValidatorAddress,
+    validatorInitData
+);
+```
+
+### Usage Examples
+
+#### Example 1: Create ZK Multi-Sig Nexus Account
+
+```typescript
+import { generateStateRoot, generateStateValidationProof } from "./zkUtils";
+
+// Define your private signers (off-chain only)
+const privateSigners = [
+    "0x1234...5678",  // Signer 1 address
+    "0xabcd...efgh",  // Signer 2 address
+    "0x9876...5432"   // Signer 3 address
+];
+const threshold = 2;  // 2-of-3 required
+
+// Generate state root commitment
+const stateRoot = await generateStateRoot(privateSigners, threshold);
+
+// Deploy Nexus account via factory
+const nexusAccount = await factory.createAccount(
+    stateRoot,
+    zkProofVerifier,
+    0,  // index for first account
+    [], // no registry attesters
+    0   // no registry threshold
+);
+
+console.log("Nexus account deployed:", nexusAccount);
+console.log("Private signers:", privateSigners, "(never revealed on-chain!)");
+```
+
+#### Example 2: Submit UserOperation with ZK Proof
+
+```typescript
+import { generateTransactionProof } from "./zkUtils";
+
+// 1. Prepare execution parameters
+const to = "0xRecipientAddress";
+const value = ethers.parseEther("0.01"); // 0.01 POL
+const data = "0x"; // Empty calldata for simple transfer
+
+// 2. Encode execution (ERC-7579 format)
+// ExecutionMode: 0x00 (SINGLE) + 0x00 (REVERT) + zeros
+const executionMode = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+// ExecutionCalldata: Simple concatenation for SINGLE mode
+const executionCalldata = ethers.concat([
+    to,                           // address (20 bytes)
+    ethers.toBeHex(value, 32),   // value (32-byte big-endian)
+    data                          // calldata
+]);
+
+// 3. Build UserOperation
+const callData = ethers.concat([
+    "0xe9ae5c53", // execute(bytes32,bytes) selector
+    ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes"],
+        [executionMode, executionCalldata]
+    )
+]);
+
+const userOp = {
+    sender: nexusAccount,
+    nonce: encodeNonce(0, zkMultiSigValidatorAddress),  // Use ZK validator
+    callData: callData,
+    accountGasLimits: packGasLimits(10000000n, 3000000n), // verification, call gas
+    preVerificationGas: 300000n,
+    gasFees: packGasFees(maxPriorityFee, maxFee),
+    paymasterAndData: "0x",
+    signature: "0x"  // Will be filled with ZK proof
+};
+
+// 4. Get UserOp hash
+const userOpHash = await entryPoint.getUserOpHash(userOp);
+
+// 5. Collect private signatures (off-chain)
+const sig1 = await signer1.signMessage(ethers.getBytes(userOpHash));
+const sig2 = await signer2.signMessage(ethers.getBytes(userOpHash));
+
+// 6. Generate ZK proof
+const zkProof = await generateTransactionProof({
+    txHash: userOpHash,
+    privateSigners: privateSigners,
+    signatures: [sig1, sig2, nullSignature],  // Fill unused slots with null
+    threshold: threshold
+});
+
+// 7. Add proof as signature
+userOp.signature = zkProof;
+
+// 8. Submit to EntryPoint
+await entryPoint.handleOps([userOp], beneficiary);
+```
+
+#### Example 3: Sign Message with ZK Multi-Sig (ERC-1271)
+
+```typescript
+// Off-chain message signing
+const message = "Transfer ownership to 0x...";
+const messageHash = ethers.utils.hashMessage(message);
+
+// Collect signatures from private signers
+const signatures = await Promise.all([
+    signer1.signMessage(messageHash),
+    signer2.signMessage(messageHash)
+]);
+
+// Generate ZK proof
+const zkProof = await generateTransactionProof({
+    txHash: messageHash,
+    privateSigners: privateSigners,
+    signatures: [...signatures, nullSignature],
+    threshold: threshold
+});
+
+// Verify on-chain
+const isValid = await nexusAccount.isValidSignature(messageHash, zkProof);
+// Returns: 0x1626ba7e (ERC-1271 magic value) if valid
+```
+
+#### Example 4: Update Signer Set (Rotate Signers)
+
+```typescript
+// Generate new configuration with different signers
+const newSigners = ["0xnew1...", "0xnew2...", "0xnew3..."];
+const newThreshold = 2;
+const newStateRoot = await generateStateRoot(newSigners, newThreshold);
+
+// Prepare update call to validator
+const updateCalldata = zkValidator.interface.encodeFunctionData(
+    "updateConfiguration",
+    [newStateRoot, verifierAddress]
+);
+
+// Execute through Nexus (must be authorized by CURRENT configuration)
+// Use CALLTYPE_SINGLE (0x00)
+const executionMode = "0x0000000000000000000000000000000000000000000000000000000000000000";
+const executionCalldata = ethers.concat([
+    await zkValidator.getAddress(),  // target
+    ethers.toBeHex(0n, 32),         // value (0)
+    updateCalldata                   // calldata
+]);
+
+const callData = ethers.concat([
+    "0xe9ae5c53", // execute(bytes32,bytes)
+    ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes"],
+        [executionMode, executionCalldata]
+    )
+]);
+
+// Submit via UserOp with OLD configuration proof
+// After successful execution, use NEW configuration for future transactions
+```
+
+### Practical Implementation (Hardhat Tasks)
+
+For production use, tested hardhat tasks are provided that handle all the complexity of ZK proof generation and UserOperation submission.
+
+#### Sign UserOperation
+
+Generate ZK proof for a transaction:
+
+```bash
+npx hardhat --network polygon signUserOp \
+  --account 0xYourNexusAccount \
+  --validator 0x6e48CaE2f383CB2982215adC04E5D9B72E6206f9 \
+  --to 0xRecipientAddress \
+  --value 0.01 \
+  --data 0x
+```
+
+This task:
+- Constructs the UserOperation with proper nonce encoding
+- Collects signatures from private signers
+- Generates ZK proof using Noir circuits
+- Returns signatures and userOpHash for submission
+
+#### Send UserOperation
+
+Submit a signed UserOperation to the network:
+
+```bash
+npx hardhat --network polygon sendZKNexusUserOp \
+  --account 0xYourNexusAccount \
+  --validator 0x6e48CaE2f383CB2982215adC04E5D9B72E6206f9 \
+  --to 0xRecipientAddress \
+  --value 0.01 \
+  --data 0x \
+  --signatures "0x..." \
+  --userhash "0x..."
+```
+
+**Implementation Details**: See [zknexus/zknexus.ts](zknexus/zknexus.ts) for the complete working implementation.
+
+#### ExecutionMode Format
+
+The `executionMode` parameter uses ERC-7579's structured encoding:
+
+```
+Byte Structure (32 bytes total):
+┌─────────┬──────────┬───────────┬───────────┬──────────────┐
+│ Byte 0  │ Byte 1   │ Bytes 2-5 │ Bytes 6-9 │ Bytes 10-31  │
+│ CallType│ ExecType │ Unused    │ Selector  │ Context      │
+└─────────┴──────────┴───────────┴───────────┴──────────────┘
+
+CallType (Byte 0):
+  0x00 = CALLTYPE_SINGLE      (single execution)
+  0x01 = CALLTYPE_BATCH       (batch execution)
+  0xFF = CALLTYPE_DELEGATECALL
+
+ExecType (Byte 1):
+  0x00 = EXECTYPE_DEFAULT (revert on failure)
+  0x01 = EXECTYPE_TRY     (allow failure)
+
+Example for single execution with revert on error:
+0x0000000000000000000000000000000000000000000000000000000000000000
+  ^^-- SINGLE
+    ^^-- DEFAULT (revert)
+```
+
+#### ExecutionCalldata Encoding
+
+For single executions, encode as simple hex concatenation:
+
+```typescript
+// Correct encoding for CALLTYPE_SINGLE (matches Rhinestone SDK)
+const executionCalldata = ethers.concat([
+    to,                              // address (20 bytes)
+    ethers.toBeHex(valueInWei, 32), // value (32-byte big-endian)
+    data                             // calldata
+]);
+
+// Then construct callData for Nexus.execute(bytes32,bytes)
+const callData = ethers.concat([
+    "0xe9ae5c53", // execute(bytes32,bytes) selector
+    ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes"],
+        [executionMode, executionCalldata]
+    )
+]);
+```
+
+**Important**: Do NOT use `abi.encode()` or `solidityPacked()` for executionCalldata - use simple concatenation as shown above.
+
+#### Web Interface
+
+A Next.js web interface is available for easier interaction:
+
+```bash
+cd zknexus-ui
+pnpm install
+pnpm dev
+```
+
+Features:
+- View account information and balances
+- Create new ZK MultiSig Nexus accounts
+- Sign and send UserOperations (requires backend prover integration)
+- Modern UI with wallet connection via RainbowKit
+
+See [zknexus-ui/README.md](zknexus-ui/README.md) and [zknexus-ui/QUICKSTART.md](zknexus-ui/QUICKSTART.md) for setup instructions.
+
+### Comparison: ZK Validator vs K1Validator
+
+| Feature | K1Validator | ZKMultiSigValidator |
+|---------|-------------|---------------------|
+| **Signer Privacy** | Public (EOA address on-chain) | Private (only state root visible) |
+| **Multi-Sig** | Single signer | M-of-N threshold |
+| **Signature Type** | ECDSA | ZK Proof of ECDSA signatures |
+| **Gas Cost** | ~50k gas | ~300-500k gas (proof verification) |
+| **Setup Complexity** | Simple (just an address) | Requires circuit compilation |
+| **Signer Identity** | Always visible | Never revealed |
+| **Use Cases** | Personal accounts, simple wallets | DAOs, corporate treasuries, privacy |
+
+### Advanced: Combining Validators
+
+Nexus's modularity allows combining multiple validators:
+
+```typescript
+// Install both K1Validator and ZKMultiSigValidator
+await nexusAccount.installModule(MODULE_TYPE_VALIDATOR, k1Validator, ownerAddress);
+await nexusAccount.installModule(MODULE_TYPE_VALIDATOR, zkValidator, zkConfig);
+
+// Use K1Validator for low-value transactions (cheaper)
+const smallTxUserOp = {
+    nonce: encodeNonce(0, k1ValidatorAddress),
+    signature: eoaSignature,
+    // ...
+};
+
+// Use ZK validator for high-value transactions (private)
+const largeTxUserOp = {
+    nonce: encodeNonce(1, zkMultiSigValidatorAddress),
+    signature: zkProof,
+    // ...
+};
+```
+
+### Security Considerations
+
+1. **State Root Generation**: Must be computed correctly off-chain
+2. **Proof Generation**: Requires secure environment to generate proofs with private signer keys
+3. **Verifier Trust**: The ERC8039 verifier contract must be audited and trusted
+4. **Gas Costs**: ZK proof verification is more expensive than simple ECDSA (~6-10x gas)
+5. **Circuit Security**: The Noir circuits must be correctly implemented and audited
+
+### Implementation Files
+
+- **Validator Module**: [`nexus/contracts/modules/validators/ZKMultiSigValidator.sol`](nexus/contracts/modules/validators/ZKMultiSigValidator.sol)
+- **Factory Contract**: [`nexus/contracts/factory/ZKMultiSigValidatorFactory.sol`](nexus/contracts/factory/ZKMultiSigValidatorFactory.sol)
+- **Hardhat Tasks**: [`zknexus/zknexus.ts`](zknexus/zknexus.ts) - Complete working implementation
+- **Web Interface**: [`zknexus-ui/`](zknexus-ui/) - Next.js UI for ZK Nexus accounts
+- **Architecture Guide**: [`nexus/NEXUS_ARCHITECTURE.md`](nexus/NEXUS_ARCHITECTURE.md)
+- **Detailed Integration Guide**: [`nexus/ZK_NEXUS_GUIDE.md`](nexus/ZK_NEXUS_GUIDE.md)
+
+### Additional Resources
+
+- [Nexus Documentation](https://docs.biconomy.io)
+- [ERC-7579 Specification](https://eips.ethereum.org/EIPS/eip-7579)
+- [ERC-4337 Account Abstraction](https://eips.ethereum.org/EIPS/eip-4337)
+- [ERC-8039 Proof Verification](./contracts/interfaces/IERC8039.sol)
+
+---
 
 ## License
 
