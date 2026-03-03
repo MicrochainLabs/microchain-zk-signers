@@ -342,7 +342,6 @@ export default ZKNexusHelper;
 export async function proveStateConfiguration(
     signersRoot: Hex,
     threshold: number,
-    salt: Hex,
     stateRoot: Hex
 ) {
     // Load compiled state validation circuit
@@ -361,11 +360,10 @@ export async function proveStateConfiguration(
     console.log("State validation UltraHonk backend initialized");
 
     try {
-        // Prepare circuit inputs (now includes salt)
+        // Prepare circuit inputs
         const input = {
             signers_root: signersRoot,
             threshold: threshold,
-            salt: salt,
             on_chain_state_root: pad(stateRoot, { size: 32 })
         };
 
@@ -410,7 +408,6 @@ export async function proveWithExistingSignatures(
     signatures: Hex[],
     privateSigners: string[],
     privateThreshold: number,
-    salt: Hex,
     signersAddressesFormat: number = 0
 ) {
     const MAX_DEPTH = 4;
@@ -459,14 +456,12 @@ export async function proveWithExistingSignatures(
     console.log("Signers tree size:", signersTree.size);
     console.log("Signers tree root:", toHex(signersTree.root));
     
-    // Compute preliminary state root (signers + threshold)
-    const preliminaryStateTree = new LeanIMT(hash);
-    preliminaryStateTree.insert(signersTree.root);
-    preliminaryStateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-    
-    // Mix salt into final state root
-    const finalStateRoot = poseidon.hash([preliminaryStateTree.root, BigInt(salt)]);
-    console.log("Computed state root (with salt):", toHex(finalStateRoot));
+    // Compute state root (signers + threshold)
+    const stateTree = new LeanIMT(hash);
+    stateTree.insert(signersTree.root);
+    stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
+    const finalStateRoot = stateTree.root;
+    console.log("Computed state root:", toHex(finalStateRoot));
 
     // Generate merkle proofs for each signer
     const signersPathsProof: any[][] = [];
@@ -517,8 +512,7 @@ export async function proveWithExistingSignatures(
         siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
         signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 5, nil_signature),
         txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
-        on_chain_state_root: toHex(finalStateRoot),
-        salt: salt
+        on_chain_state_root: toHex(finalStateRoot)
     };
 
     // Load compiled circuit
@@ -733,8 +727,7 @@ export async function sendZKNexusUserOp(
     signatures: Hex[],
     userOpHash: Hex,
     privateSigners: string[],
-    privateThreshold: number,
-    salt: Hex
+    privateThreshold: number
 ) {
     const pk = vars.get("DEPLOYER_PRIVATE_KEY") as string;
     const networkConfig = hre.network.config as any;
@@ -917,68 +910,13 @@ export async function sendZKNexusUserOp(
         userOpHash,
         signatures,
         privateSigners,
-        privateThreshold,
-        salt
+        privateThreshold
     );
 
     // Set the proof as signature
     userOp.signature = toHex(proofData.proof);
     
     console.log("\n📤 Sending UserOperation...");
-    
-    // DIRECT VERIFIER TEST - Test the proof directly before submitting
-    console.log("\n🧪 Testing verifier directly with proof and public inputs...");
-    try {
-        const verifierABI = parseAbi(["function verify(bytes calldata proof, bytes32[] calldata publicInputs) external returns (bool)"]);
-        const honkVerifierAddress = "0xa68816F03fd22Fa6f17fE4B80aC5F98C3E73301a" as Address; // Direct HonkVerifier
-        const honkVerifier = getContract({
-            address: honkVerifierAddress,
-            abi: verifierABI,
-            client: publicClient
-        });
-        
-        // Construct public inputs exactly as the validator does
-        const testPublicInputs: Hex[] = [];
-        const hashBytes = userOpHash.slice(2); // Remove 0x
-        for (let i = 0; i < 32; i++) {
-            const byte = hashBytes.substring(i * 2, i * 2 + 2);
-            testPublicInputs.push(pad(('0x' + byte) as Hex, { size: 32 }));
-        }
-        testPublicInputs.push(pad(onChainStateRoot, { size: 32 }));
-        
-        console.log("   Test public inputs length:", testPublicInputs.length);
-        console.log("   Test proof length:", userOp.signature.length);
-        
-        // Try calling verify (this will revert if it fails)
-        const testResult = await publicClient.readContract({
-            address: honkVerifierAddress,
-            abi: verifierABI,
-            functionName: 'verify',
-            args: [userOp.signature, testPublicInputs]
-        });
-        console.log("   ✅ Direct verifier test PASSED! Result:", testResult);
-    } catch (verifierError: any) {
-        console.error("\n   ❌ Direct verifier test FAILED!");
-        console.error("   Error:", verifierError.message);
-        if (verifierError.data) {
-            console.error("   Error data:", verifierError.data);
-        }
-        // Try to decode the error if it's a custom error
-        if (verifierError.message.includes("PublicInputsLengthWrong")) {
-            console.error("   → Public inputs length is wrong!");
-        } else if (verifierError.message.includes("ProofLengthWrongWithLogN")) {
-            console.error("   → Proof length is wrong for LOG_N!");
-        } else if (verifierError.message.includes("SumcheckFailed")) {
-            console.error("   → Sumcheck verification failed!");
-        } else if (verifierError.message.includes("ShpleminiFailed")) {
-            console.error("   → Shplemini verification failed!");
-        }
-        console.error("\n   This indicates the proof is being rejected by the verifier.");
-        console.error("   Possible causes:");
-        console.error("   1. Verifier contract VK doesn't match circuit used for proving");
-        console.error("   2. Proof or public inputs are malformed");
-        console.error("   3. Verifier contract is from a different circuit version");
-    }
     
     // Send through EntryPoint
     const entryPointCallABI = parseAbi([
@@ -1302,19 +1240,11 @@ export async function createZKNexusAccount(
     }
     
     // Build preliminary state tree (signers + threshold)
-    const preliminaryStateTree = new LeanIMT(hash);
-    preliminaryStateTree.insert(signersTree.root);
-    preliminaryStateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
+    const stateTree = new LeanIMT(hash);
+    stateTree.insert(signersTree.root);
+    stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
     
-    // Generate random salt for privacy protection
-    const saltBytes = crypto.randomBytes(32);
-    const SNARK_SCALAR_FIELD = BigInt("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
-    let salt = BigInt('0x' + saltBytes.toString('hex'));
-    salt %= SNARK_SCALAR_FIELD;
-    const saltHex = toHex(salt) as Hex;
-    
-    // Mix salt into final state root (Approach B: Salt Mixed at End)
-    const finalStateRoot = poseidon.hash([preliminaryStateTree.root, salt]);
+    const finalStateRoot = stateTree.root;
     
     const signersRootHex = toHex(signersTree.root) as Hex;
     const stateRootHex = toHex(finalStateRoot) as Hex;
@@ -1322,15 +1252,13 @@ export async function createZKNexusAccount(
     console.log("\n📊 State Configuration:");
     console.log("   Private signers root:", signersRootHex);
     console.log("   Private threshold:", privateThreshold);
-    console.log("   Salt:", saltHex);
-    console.log("   State root (with salt):", stateRootHex);
+    console.log("   State root:", stateRootHex);
     
     // Generate state validation proof
     console.log("\n🔐 Generating state validation proof...");
     const stateValidationProofData = await proveStateConfiguration(
         signersRootHex,
         privateThreshold,
-        saltHex,
         stateRootHex
     );
     console.log("✅ State validation proof generated");
