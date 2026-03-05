@@ -639,18 +639,12 @@ The ZKMultiSigValidator module allows Nexus accounts to validate transactions us
    - Include a ZK proof in the signature field
    - The proof demonstrates M-of-N signers approved without revealing identities
 
-3. **ERC-1271 Signing**: The Nexus account can sign arbitrary messages:
-   - Generate ZK proof of multi-sig approval
-   - Off-chain signatures remain private
-   - On-chain verification via `isValidSignature()`
-
 ### Key Features
 
 - 🎯 **Modular Integration**: Works alongside other Nexus validators and modules
 - 🔐 **Privacy-First**: Signer identities never revealed on-chain
 - ⚡ **ERC-4337 Compatible**: Full Account Abstraction support with gas sponsorship
 - 🔌 **Proof System Agnostic**: Uses ERC8039 interface for any ZK proof system
-- 🛡️ **Battle-Tested**: Builds on Biconomy's audited Nexus framework
 - 🔄 **Upgradeable**: Change state root to rotate signers without deploying new account
 
 ### Deployment Options
@@ -793,7 +787,7 @@ userOp.signature = zkProof;
 await entryPoint.handleOps([userOp], beneficiary);
 ```
 
-#### Example 3: Sign Message with ZK Multi-Sig (ERC-1271)
+#### Example 3: Sign Message for ZK Multi-Sig
 
 ```typescript
 // Off-chain message signing
@@ -944,24 +938,6 @@ const callData = ethers.concat([
 
 **Important**: Do NOT use `abi.encode()` or `solidityPacked()` for executionCalldata - use simple concatenation as shown above.
 
-#### Web Interface
-
-A Next.js web interface is available for easier interaction:
-
-```bash
-cd zknexus-ui
-pnpm install
-pnpm dev
-```
-
-Features:
-- View account information and balances
-- Create new ZK MultiSig Nexus accounts
-- Sign and send UserOperations (requires backend prover integration)
-- Modern UI with wallet connection via RainbowKit
-
-See [zknexus-ui/README.md](zknexus-ui/README.md) and [zknexus-ui/QUICKSTART.md](zknexus-ui/QUICKSTART.md) for setup instructions.
-
 ### Comparison: ZK Validator vs K1Validator
 
 | Feature | K1Validator | ZKMultiSigValidator |
@@ -1011,16 +987,13 @@ const largeTxUserOp = {
 - **Validator Module**: [`nexus/contracts/modules/validators/ZKMultiSigValidator.sol`](nexus/contracts/modules/validators/ZKMultiSigValidator.sol)
 - **Factory Contract**: [`nexus/contracts/factory/ZKMultiSigValidatorFactory.sol`](nexus/contracts/factory/ZKMultiSigValidatorFactory.sol)
 - **Hardhat Tasks**: [`zknexus/zknexus.ts`](zknexus/zknexus.ts) - Complete working implementation
-- **Web Interface**: [`zknexus-ui/`](zknexus-ui/) - Next.js UI for ZK Nexus accounts
-- **Architecture Guide**: [`nexus/NEXUS_ARCHITECTURE.md`](nexus/NEXUS_ARCHITECTURE.md)
-- **Detailed Integration Guide**: [`nexus/ZK_NEXUS_GUIDE.md`](nexus/ZK_NEXUS_GUIDE.md)
 
 ### Additional Resources
 
 - [Nexus Documentation](https://docs.biconomy.io)
 - [ERC-7579 Specification](https://eips.ethereum.org/EIPS/eip-7579)
 - [ERC-4337 Account Abstraction](https://eips.ethereum.org/EIPS/eip-4337)
-- [ERC-8039 Proof Verification](./contracts/interfaces/IERC8039.sol)
+- [ERC-8039 Proof Verification](https://github.com/ethereum/ERCs/pull/1238)
 
 ---
 
