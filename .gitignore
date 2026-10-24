@@ -22,3 +22,6 @@ typechain-types
 yarn-error.log
 
 ignition/deployments
+# Foundry
+cache_forge/
+out/

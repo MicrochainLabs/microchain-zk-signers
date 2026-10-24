@@ -1,6 +1,7 @@
 use poseidon::poseidon::bn254::hash_1 as poseidon1;
 use poseidon::poseidon::bn254::hash_2 as poseidon2;
-use binary_merkle_root::binary_merkle_root;
+use trees::merkle::MerkleTree;
+use trees::types::{Calculator, MT_Creator};
 
 pub global MICROCHAIN_OWNERSHIP_STATE_MAX_DEPTH: u32 = 1;
 pub global MAX_THRESHOLD: u8 = 5;
@@ -29,13 +30,8 @@ fn validate_private_state_inputs(
 
     // Compute state root (signers + threshold)
     let threshold_hash = poseidon1([threshold as Field]);
-    let state_root = binary_merkle_root(
-        poseidon2,
-        signers_root,
-        MICROCHAIN_OWNERSHIP_STATE_MAX_DEPTH,
-        [0],
-        [threshold_hash]
-    );
+    let tree: MerkleTree<Field> = MerkleTree::new(poseidon2);
+    let state_root = tree.calculate_root(signers_root, 0, [threshold_hash]);
     
     assert(on_chain_state_root == state_root);
 }
