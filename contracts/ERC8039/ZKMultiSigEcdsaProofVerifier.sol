@@ -27,24 +27,30 @@ contract ZKMultiSigEcdsaProofVerifier is IERC8039 {
 
     /**
      * @inheritdoc IERC8039
-     * @dev Simple interface - no proof type parameter needed
+     * @dev Never reverts (ERC-8039 requirement): malformed inputs or a reverting
+     *      underlying verifier yield `bytes4(0)`.
      */
     function verifyProof(
         bytes calldata publicInputs,
         bytes calldata proof
     ) external view override returns (bytes4 magicValue) {
-        // Decode public inputs to bytes32[] array (expected by HonkVerifier)
+        // Ensure the ABI-encoded bytes32[] carries exactly 33 public inputs (32 hash bytes + state root).
+        // Checking offset and length up-front guarantees `abi.decode` cannot revert.
+        if (
+            publicInputs.length != 32 * (2 + 33) ||
+            uint256(bytes32(publicInputs[0:32])) != 0x20 ||
+            uint256(bytes32(publicInputs[32:64])) != 33
+        ) {
+            return bytes4(0);
+        }
         bytes32[] memory decodedInputs = abi.decode(publicInputs, (bytes32[]));
 
-        // Ensure we have exactly 33 public input (state root)
-        require(decodedInputs.length == 33, "Invalid public inputs length");
-
-        // Verify the proof using HonkVerifier
-        bool isValid = honkVerifier.verify(proof, decodedInputs);
-
-        // Return magic value if valid
-        if (isValid) {
-            magicValue = ERC8039Constants.PROOF_MAGIC_VALUE;
+        try honkVerifier.verify(proof, decodedInputs) returns (bool isValid) {
+            if (isValid) {
+                magicValue = ERC8039Constants.PROOF_MAGIC_VALUE;
+            }
+        } catch {
+            magicValue = bytes4(0);
         }
     }
 

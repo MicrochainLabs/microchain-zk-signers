@@ -16,14 +16,38 @@ import {IERC8039, ERC8039Constants} from "../ERC8039/IERC8039.sol";
  */
 contract ZKMultiSigEcdsaSingleton is SignatureValidator {
     /**
+     * @notice Address of this singleton deployment, used to detect direct (non-`delegatecall`) calls.
+     */
+    address private immutable _SELF;
+
+    /**
+     * @notice The {ZKMultiSigEcdsaFactory} that deployed this singleton. It is the only caller
+     * allowed to invoke the singleton directly (see {ZKMultiSigEcdsaFactory.isValidSignatureForSigner})
+     * and the only deployer accepted by {ZKMultiSigEcdsaProxy}.
+     */
+    address public immutable FACTORY;
+
+    constructor() {
+        _SELF = address(this);
+        FACTORY = msg.sender;
+    }
+
+    /**
      * @inheritdoc SignatureValidator
      * @dev Verifies a ZK proof for multi-signature validation.
      * The configuration (stateRoot and verifier address) is read from the end of calldata.
+     * The configuration tail is only trusted when it was appended by a {ZKMultiSigEcdsaProxy}
+     * (`delegatecall`) or by the factory; a direct call from anyone else returns `false`, since the
+     * caller could otherwise supply an arbitrary verifier and state root.
      */
     function _verifySignature(
         bytes32 hash,
         bytes calldata signature
     ) internal view virtual override returns (bool success) {
+        if (address(this) == _SELF && msg.sender != FACTORY) {
+            return false;
+        }
+
         // Get configuration from end of calldata (appended by proxy)
         (bytes32 stateRoot, address verifierAddress) = getConfiguration();
 
