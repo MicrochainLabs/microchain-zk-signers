@@ -7,6 +7,7 @@ pragma solidity ^0.8.27;
 import { PackedUserOperation } from "account-abstraction/interfaces/PackedUserOperation.sol";
 import { IValidator } from "@biconomy/nexus/interfaces/modules/IValidator.sol";
 import { MODULE_TYPE_VALIDATOR, VALIDATION_SUCCESS, VALIDATION_FAILED, ERC1271_MAGICVALUE, ERC1271_INVALID } from "@biconomy/nexus/types/Constants.sol";
+import { ERC7739Validator } from "erc7739Validator/ERC7739Validator.sol";
 import { IERC8039, ERC8039Constants } from "../../../ERC8039/IERC8039.sol";
 
 /// @title ZKMultiSigValidator
@@ -15,8 +16,14 @@ import { IERC8039, ERC8039Constants } from "../../../ERC8039/IERC8039.sol";
 ///      Only a cryptographic commitment (state root) to the authorized signers is stored on-chain.
 ///      This validator uses zero-knowledge proofs to verify that sufficient signatures were provided
 ///      without revealing which specific signers approved the transaction.
+///
+///      ERC-1271 validation follows ERC-7739 (nested EIP-712): the signers sign a digest that is
+///      wrapped with the account's EIP-712 domain, so a proof produced for one account cannot be
+///      replayed against another account (or chain) sharing the same signer set.
+///      The ERC-1271 `signature` is `zkProof ‖ APP_DOMAIN_SEPARATOR ‖ contents ‖ contentsDescription ‖ uint16(len)`
+///      for the `TypedDataSign` flow, or just `zkProof` for the `PersonalSign` flow.
 /// @author Microchain Labs
-contract ZKMultiSigValidator is IValidator {
+contract ZKMultiSigValidator is IValidator, ERC7739Validator {
     /*//////////////////////////////////////////////////////////////////////////
                             CONSTANTS & STORAGE
     //////////////////////////////////////////////////////////////////////////*/
@@ -72,7 +79,9 @@ contract ZKMultiSigValidator is IValidator {
 
     /**
      * @notice Initialize the module with ZK multi-sig off-chain state
-     * @dev stateRoot is the cryptographic commitment(Instance/Public input) to the signer set + threshold + salt
+     * @dev stateRoot is the cryptographic commitment(Instance/Public input) to the signer set + threshold + salt.
+     *      The configuration is keyed by `msg.sender` (the smart account); every account can only ever
+     *      configure its own slot, so this function needs no additional access control.
      */
     function onInstall(bytes calldata data) external override {
         require(data.length != 0, InvalidData());
@@ -158,8 +167,9 @@ contract ZKMultiSigValidator is IValidator {
         PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) external override returns (uint256) {
-        // Get state root for this account
-        bytes32 stateRoot = accountStateRoots[userOp.sender];
+        // The smart account is always the caller of a validator module (ERC-7579);
+        // `msg.sender == userOp.sender` under the EntryPoint, but `msg.sender` is canonical.
+        bytes32 stateRoot = accountStateRoots[msg.sender];
 
         if (stateRoot == bytes32(0)) {
             return VALIDATION_FAILED;
@@ -180,33 +190,22 @@ contract ZKMultiSigValidator is IValidator {
     }
 
     /**
-     * @notice Validates a signature for ERC-1271 compatibility
-     * @dev Verifies that a ZK proof authorizes the given hash for the sender
-     * @param sender The smart account address
+     * @notice Validates a signature for ERC-1271 compatibility (ERC-7739 nested EIP-712 flow)
+     * @dev The smart account is `msg.sender`; `sender` is the original requester of the ERC-1271 call
+     *      (e.g. a dApp contract) and is only used to decide whether the nested EIP-712 wrapping may
+     *      be skipped (see {_erc1271CallerIsSafe}).
+     * @param sender The original ERC-1271 requester (forwarded by the account)
      * @param hash The hash being signed
-     * @param data The ZK proof data
-     * @return magicValue ERC1271_MAGICVALUE if valid, ERC1271_INVALID otherwise
+     * @param data The ZK proof, optionally followed by the ERC-7739 `TypedDataSign` suffix
+     * @return magicValue ERC1271_MAGICVALUE if valid, ERC1271_INVALID otherwise, or 0x77390001 for
+     *         the ERC-7739 support-detection request
      */
     function isValidSignatureWithSender(
         address sender,
         bytes32 hash,
         bytes calldata data
     ) external view override returns (bytes4) {
-        // Get state root for this account
-        bytes32 stateRoot = accountStateRoots[sender];
-
-        if (stateRoot == bytes32(0)) {
-            return ERC1271_INVALID;
-        }
-
-        // Verify the ZK proof
-        bool isValid = _verifyZKProofForUserOpValidation(stateRoot, hash, data);
-
-        if (!isValid) {
-            return ERC1271_INVALID;
-        }
-
-        return ERC1271_MAGICVALUE;
+        return _erc1271IsValidSignatureWithSender(sender, hash, _erc1271UnwrapSignature(data));
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -220,7 +219,7 @@ contract ZKMultiSigValidator is IValidator {
 
     /// @notice Returns the version of the module
     function version() external pure returns (string memory) {
-        return "0.0.1";
+        return "0.0.2";
     }
 
     /// @notice Checks if the module is of the specified type
@@ -233,6 +232,53 @@ contract ZKMultiSigValidator is IValidator {
     /*//////////////////////////////////////////////////////////////////////////
                                      INTERNAL
     //////////////////////////////////////////////////////////////////////////*/
+
+    /**
+     * @dev ERC-7739 entry point. Overridden because the base implementation performs an ECDSA
+     *      low-`s` malleability check on `signature[32:64]`, which is meaningless for (and would
+     *      randomly reject) ZK proof bytes. Everything else mirrors {ERC7739Validator}.
+     */
+    function _erc1271IsValidSignatureWithSender(
+        address sender,
+        bytes32 hash,
+        bytes calldata signature
+    ) internal view override returns (bytes4) {
+        // ERC-7739 support detection request: empty signature and hash == 0x7739...7739
+        if (signature.length == 0 && uint256(hash) == ~uint256(0) / 0xffff * 0x7739) {
+            return SUPPORTS_ERC7739_V1;
+        }
+
+        bool success = _erc1271IsValidSignatureViaSafeCaller(sender, hash, signature)
+            || _erc1271IsValidSignatureViaNestedEIP712(hash, signature)
+            || _erc1271IsValidSignatureViaRPC(hash, signature);
+
+        return success ? ERC1271_MAGICVALUE : ERC1271_INVALID;
+    }
+
+    /**
+     * @dev Called by the ERC-7739 machinery with the final (account-bound) digest and the raw ZK proof.
+     *      The smart account is `msg.sender`.
+     */
+    function _erc1271IsValidSignatureNowCalldata(
+        bytes32 hash,
+        bytes calldata signature
+    ) internal view override returns (bool) {
+        bytes32 stateRoot = accountStateRoots[msg.sender];
+        if (stateRoot == bytes32(0)) {
+            return false;
+        }
+        return _verifyZKProofForUserOpValidation(stateRoot, hash, signature);
+    }
+
+    /**
+     * @dev Callers for which the raw `hash` already commits to the account, so the nested
+     *      EIP-712 wrapping can be skipped. Mirrors Nexus' K1Validator.
+     *      - `MulticallerWithSigner` includes the account in the signed hash.
+     *      - The account itself (`sender == msg.sender`), e.g. Nexus enable-mode signatures.
+     */
+    function _erc1271CallerIsSafe(address sender) internal view override returns (bool) {
+        return sender == 0x000000000000D9ECebf3C23529de49815Dac1c4c || sender == msg.sender;
+    }
 
     /**
      * @dev Verifies a ZK proof

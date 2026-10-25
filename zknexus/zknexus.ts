@@ -489,7 +489,7 @@ export async function proveWithExistingSignatures(
 
         const merkleProofIndices = [];
         for (let i = 0; i < MAX_DEPTH; i += 1) {
-            merkleProofIndices.push((addressProof.index >> i) & 1);
+            merkleProofIndices.push(((addressProof.index >> i) & 1) === 1);
         }
         
         await signersIndicesProof.push(merkleProofIndices);
@@ -508,7 +508,7 @@ export async function proveWithExistingSignatures(
         threshold: toHex(BigInt(privateThreshold)),
         signers_root: toHex(signersTree.root),
         merkle_proof_length: padArray(merkleProofLength, 5, 0),
-        indices: padArray(signersIndicesProof, 5, defaultTxSigSiblingsOrIndices),
+        indices: padArray(signersIndicesProof, 5, Array(MAX_DEPTH).fill(false)),
         siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
         signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 5, nil_signature),
         txn_hash: Array.from(toBytes(txHash as `0x${string}`)),

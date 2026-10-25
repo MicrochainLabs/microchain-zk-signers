@@ -28,10 +28,12 @@ contract PrivateStateValidationProofVerifier is IERC8039 {
 
     /**
      * @notice Verifies a private state validation proof
-     * @dev Decodes public inputs and verifies the proof using the HonkVerifier
-     * 
+     * @dev Decodes public inputs and verifies the proof using the HonkVerifier.
+     * Never reverts (ERC-8039 requirement): malformed inputs or a reverting
+     * underlying verifier yield `bytes4(0)`.
+     *
      * The public inputs contain the state root that was computed in the circuit.
-     * 
+     *
      * @param publicInputs The public inputs (encoded as bytes32[])
      * @param proof The ZK proof bytes
      * @return magicValue PROOF_MAGIC_VALUE if valid, 0x00000000 otherwise
@@ -40,18 +42,23 @@ contract PrivateStateValidationProofVerifier is IERC8039 {
         bytes calldata publicInputs,
         bytes calldata proof
     ) external view returns (bytes4 magicValue) {
-        // Decode public inputs to bytes32[] array (expected by HonkVerifier)
+        // Ensure the ABI-encoded bytes32[] carries exactly 1 public input (state root).
+        // Checking offset and length up-front guarantees `abi.decode` cannot revert.
+        if (
+            publicInputs.length != 32 * (2 + 1) ||
+            uint256(bytes32(publicInputs[0:32])) != 0x20 ||
+            uint256(bytes32(publicInputs[32:64])) != 1
+        ) {
+            return bytes4(0);
+        }
         bytes32[] memory decodedInputs = abi.decode(publicInputs, (bytes32[]));
 
-        // Ensure we have exactly 1 public input (state root)
-        require(decodedInputs.length == 1, "Invalid public inputs length");
-
-        // Verify the proof using HonkVerifier
-        bool isValid = honkVerifier.verify(proof, decodedInputs);
-
-         // Return magic value if valid
-        if (isValid) {
-            magicValue = ERC8039Constants.PROOF_MAGIC_VALUE;
+        try honkVerifier.verify(proof, decodedInputs) returns (bool isValid) {
+            if (isValid) {
+                magicValue = ERC8039Constants.PROOF_MAGIC_VALUE;
+            }
+        } catch {
+            magicValue = bytes4(0);
         }
     }
 

@@ -2,6 +2,8 @@
 /* solhint-disable no-complex-fallback */
 pragma solidity ^0.8.20;
 
+import {ZKMultiSigEcdsaSingleton} from "./ZKMultiSigEcdsaSingleton.sol";
+
 /**
  * @title ZK MultiSig ECDSA Proxy
  * @dev A specialized proxy to a {ZKMultiSigEcdsaSingleton} signature validator implementation.
@@ -25,6 +27,9 @@ contract ZKMultiSigEcdsaProxy {
 
     /**
      * @notice Creates a new ZK MultiSig ECDSA Proxy.
+     * @dev Only deployable by the {ZKMultiSigEcdsaFactory} that created `singleton`, which verifies a
+     * private state validation proof first. This guarantees every proxy pointing at the official
+     * singleton went through state validation (e.g. no `threshold == 0` configurations).
      * @param singleton The {ZKMultiSigEcdsaSingleton} implementation to proxy to.
      * @param stateRoot The Merkle root of authorized signers.
      * @param verifier The address of the IERC8039-HonkVerifier contract.
@@ -33,6 +38,10 @@ contract ZKMultiSigEcdsaProxy {
         require(singleton != address(0), "ZK MultiSig: Invalid singleton address");
         require(stateRoot != bytes32(0), "ZK MultiSig: Invalid state root");
         require(verifier != address(0), "ZK MultiSig: Invalid verifier address");
+        require(
+            msg.sender == ZKMultiSigEcdsaSingleton(singleton).FACTORY(),
+            "ZK MultiSig: Only factory can deploy"
+        );
 
         _SINGLETON = singleton;
         _STATE_ROOT = stateRoot;

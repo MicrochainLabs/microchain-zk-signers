@@ -256,6 +256,12 @@ For verification before deployment or one-time checks:
 4. **Singleton** → verifies ZK proof
 5. **Factory** → returns magic value if valid
 
+### Trust Boundaries
+
+- **Singleton direct calls are rejected.** The configuration tail is only trusted when the singleton runs under `delegatecall` from a proxy or is called by its own factory. A direct call from any other address returns `0x00000000`, so the singleton address can never be abused as an "always valid" signer by appending an attacker-chosen verifier/state root to calldata.
+- **Proxies can only be deployed by the factory** (`ZKMultiSigEcdsaSingleton.FACTORY()`), which first verifies a private state validation proof. Every proxy pointing at the official singleton has therefore been through state validation (e.g. no `threshold == 0` configuration). When adding a proxy as a Safe owner, check that `factory.getSigner(stateRoot, verifier)` returns its address and that `verifier` is the canonical ERC-8039 transaction verifier.
+- **ERC-8039 adapters never revert**; malformed public inputs or a reverting underlying `HonkVerifier` yield `0x00000000`.
+
 ---
 
 ## Key Benefits

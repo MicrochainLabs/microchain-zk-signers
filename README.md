@@ -148,7 +148,7 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │    • signers: [PubKey; MAX_SIGNERS]  (ECDSA public keys)    │
 │    • signatures: [Signature; MAX_SIGNERS]  (ECDSA sigs)     │
 │    • merkle_proof_length: [u32; MAX_SIGNERS]                │
-│    • merkle_proof_indices: [[u1; DEPTH]; MAX_SIGNERS]       │
+│    • merkle_proof_indices: [[bool; DEPTH]; MAX_SIGNERS]       │
 │    • merkle_proof_siblings: [[Field; DEPTH]; MAX_SIGNERS]   │
 │    • signers_root: Field                                     │
 │    • threshold: u8                                           │

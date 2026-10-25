@@ -1,7 +1,7 @@
-use dep::std;
 use poseidon::poseidon::bn254::hash_1 as poseidon1;
 use poseidon::poseidon::bn254::hash_2 as poseidon2;
-use binary_merkle_root::binary_merkle_root;
+use trees::merkle::MerkleTree;
+use trees::types::{Calculator, MT_Creator};
 use keccak256::keccak256;
 
 // Maximum depth of the Merkle Tree.
@@ -35,8 +35,22 @@ fn cmp_gt<let N: u32>(a: [u8; N], b: [u8; N]) -> bool {
     result
 }
 
+/// Compute a Merkle root from a leaf with a variable proof depth, using the
+/// `MerkleTree` implementation from the zk-kit merkle-trees library one level at a time.
+/// Levels at or above `depth` are skipped.
+fn merkle_root_with_depth(leaf: Field, depth: u32, indices: [bool; SIGNERS_MAX_DEPTH], siblings: [Field; SIGNERS_MAX_DEPTH]) -> Field {
+    let tree: MerkleTree<Field> = MerkleTree::new(poseidon2);
+    let mut node = leaf;
+    for i in 0..SIGNERS_MAX_DEPTH {
+        if i < depth {
+            node = tree.calculate_root(node, indices[i] as Field, [siblings[i]]);
+        }
+    }
+    node
+}
+
 /// Verify if the signatures are valid and the signers are in the owners list.
-fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold: u8, merkle_proof_length: [u32; MAX_SIGNERS], merkle_proof_indices: [[u1; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], merkle_proof_siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], signatures: [Signature; MAX_SIGNERS], txn_hash: Hash, on_chain_state_root: Field) {
+fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold: u8, merkle_proof_length: [u32; MAX_SIGNERS], merkle_proof_indices: [[bool; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], merkle_proof_siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], signatures: [Signature; MAX_SIGNERS], txn_hash: Hash, on_chain_state_root: Field) {
     
     let mut curr_owner = [0; 20];
     let mut num_verified_signatures = 0;
@@ -73,8 +87,7 @@ fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold
             }
 
             let address_hash = poseidon1([result]);
-            let merkle_root = binary_merkle_root(
-                poseidon2,
+            let merkle_root = merkle_root_with_depth(
                 address_hash,
                 merkle_proof_length[i],
                 merkle_proof_indices[i],
@@ -92,13 +105,8 @@ fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold
     // Compute state root: depth 1 tree with signers_root (left) and threshold (right)
     // Hash threshold for consistency with other leaf values in the Merkle tree
     let threshold_hash = poseidon1([threshold as Field]);
-    let state_root = binary_merkle_root(
-        poseidon2,
-        signers_root,
-        MICROCHAIN_OWNERSHIP_STATE_MAX_DEPTH,
-        [0],
-        [threshold_hash]
-    );
+    let tree: MerkleTree<Field> = MerkleTree::new(poseidon2);
+    let state_root = tree.calculate_root(signers_root, 0, [threshold_hash]);
     assert(on_chain_state_root == state_root);
 
 }
@@ -108,7 +116,7 @@ fn main(
     threshold: u8, 
     signers_root: Field, 
     merkle_proof_length: [u32; MAX_SIGNERS], 
-    indices: [[u1; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
+    indices: [[bool; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
     siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
     signatures: [Signature; MAX_SIGNERS], 
     txn_hash: pub Hash, 
@@ -253,11 +261,11 @@ fn test_main() {
     let signers_root = 16223743289759414337474221898890222788896083712324022742978151074941795950178;
     let merkle_proof_length = [ 2, 1, 0, 0, 0];
     let indices = [ 
-        [ 0, 0, 0, 0 ],
-        [ 1, 0, 0, 0 ],
-        [ 0, 0, 0, 0 ],
-        [ 0, 0, 0, 0 ],
-        [ 0, 0, 0, 0 ]
+        [ false, false, false, false ],
+        [ true, false, false, false ],
+        [ false, false, false, false ],
+        [ false, false, false, false ],
+        [ false, false, false, false ]
      ];
     let siblings =  [
         [ 12517834438782012532142902368981775795544279798764039177004793700602327702286, 20482135275829837109546745489042441667237462547252720092535479030520979794670, 0, 0 ],
