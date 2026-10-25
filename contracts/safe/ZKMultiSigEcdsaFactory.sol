@@ -27,7 +27,7 @@ contract ZKMultiSigEcdsaFactory {
     /**
      * @notice Emitted when a new signer proxy is created.
      * @param signer The address of the created signer proxy.
-     * @param stateRoot The Merkle root of authorized signers for this instance.
+     * @param stateRoot The salted commitment Poseidon3(signersRoot, Poseidon1(threshold), salt) for this instance.
      * @param zkMultiSigEcdsaVerifier The address of the TX validator ZK verifier address used by this instance.
      */
     event SignerCreated(address indexed signer, bytes32 indexed stateRoot, address indexed zkMultiSigEcdsaVerifier);
@@ -48,7 +48,7 @@ contract ZKMultiSigEcdsaFactory {
     /**
      * @notice Computes the deterministic address for a signer proxy.
      * @dev Uses CREATE2 to calculate the address where a proxy would be deployed.
-     * @param stateRoot The Merkle root of authorized signers.
+     * @param stateRoot The salted commitment to the private signer set + threshold.
      * @param zkMultiSigEcdsaVerifier The address of the ZK Multi-Sig ECDSA Verifier contract.
      * @return signer The deterministic address of the signer proxy.
      */
@@ -71,7 +71,7 @@ contract ZKMultiSigEcdsaFactory {
      * @dev Verifies the state configuration proof before deploying the proxy.
      * If a proxy already exists at the computed address, this function does nothing.
      * Uses CREATE2 with salt=0 for deterministic deployment.
-     * @param stateRoot The Merkle root of authorized signers (also serves as public input to state validation).
+     * @param stateRoot The salted commitment to signers + threshold (also serves as public input to state validation).
      * @param zkMultiSigEcdsaVerifier The address of the ZK Multi-Sig ECDSA Verifier contract for signature verification.
      * @param privateStateValidationProof The ZK proof proving the state configuration is valid.
      * @return signer The address of the signer proxy (existing or newly created).
@@ -117,7 +117,7 @@ contract ZKMultiSigEcdsaFactory {
      * Performs a staticcall to the singleton with the configuration appended to calldata.
      * @param message The message hash that was signed.
      * @param signature The ZK proof signature to verify.
-     * @param stateRoot The Merkle root of authorized signers.
+     * @param stateRoot The salted commitment to the private signer set + threshold.
      * @param verifier The address of the HonkVerifier contract.
      * @return magicValue The ERC-1271 magic value (0x1626ba7e) if valid, 0x00000000 otherwise.
      */

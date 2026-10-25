@@ -9,10 +9,8 @@ import { vars } from "hardhat/config";
 import crypto from 'crypto';
 
 import factory from "../ignition/modules/zkMultiSigEcdsaFactory";
+import { addressLeaf, buildSignersTree, computeStateRoot, fieldToHex, generateSalt, parseSalt, printSaltBackupNotice } from "../zkcommon/stateRoot";
 
-
-import { poseidon } from "@iden3/js-crypto";
-import { LeanIMT } from "@zk-kit/lean-imt";
 // Native Noir packages (bypassing outdated hardhat-noir)
 // Install with: pnpm add @noir-lang/noir_js @aztec/bb.js
 import { Noir } from "@noir-lang/noir_js";
@@ -60,9 +58,6 @@ export function padArray(arr: any[], length: number, fill: any = 0) {
 function ensureHexPrefix(value: string): `0x${string}` {
     return value.startsWith("0x") ? value as `0x${string}` : `0x${value}`;
 }
-
-// Hash function used to compute the tree nodes.
-const hash = (a: bigint, b: bigint) => poseidon.hash([a, b])
 
 export async function send(hre: any, safeAddr: string, to: string, value: string, data: string, proof: string) {
     // Get wallet client
@@ -118,7 +113,8 @@ export async function send(hre: any, safeAddr: string, to: string, value: string
 
 }
 
-export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateThreshold: number, privateSigners: string[], signersAddressesFormat: number) {
+export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateThreshold: number, privateSigners: string[], signersAddressesFormat: number, privateSalt: string) {
+    const salt = parseSalt(privateSalt);
     // Initialize Safe - we need it to prepare the witness (owners/threeshold) from onchain data.
     const safe = await Safe.init({
         provider: hre.network.config.url,
@@ -165,12 +161,12 @@ export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, tx
     console.log("Verifier address:", verifierAddress);
     console.log("Private threshold:", privateThreshold);
         
-    const proofData = await proveTransactionSignatures(hre, signatures as Hex[], txHash as Hex, privateSigners, signersAddressesFormat, toHex(BigInt(privateThreshold)), onChainStateRoot as Hex);
+    const proofData = await proveTransactionSignatures(hre, signatures as Hex[], txHash as Hex, privateSigners, signersAddressesFormat, toHex(BigInt(privateThreshold)), salt, onChainStateRoot as Hex);
     console.log("Proof: ", toHex(proofData.proof));
     console.log("Public inputs:", proofData.publicInputs);
 }
 
-export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, signatures: Hex[], txHash: Hex, privateSigners: string[], signersAddressesFormat: number, privateThreshold: Hex, onChainStateRoot: Hex) {
+export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, signatures: Hex[], txHash: Hex, privateSigners: string[], signersAddressesFormat: number, privateThreshold: Hex, salt: bigint, onChainStateRoot: Hex) {
         // Load compiled circuit directly from filesystem (bypassing hardhat-noir)
         const circuitPath = join(process.cwd(), "noir", "target", "zk_multi_sig_ecdsa.json");
         const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
@@ -198,36 +194,18 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
         sortedSignatures.sort((a, b) => a.addr.localeCompare(b.addr));
         const sortedSigs = sortedSignatures.map(s => s.sig);
 
-        // Sort signers for deterministic tree construction
-        const sortedPrivateSigners = [...privateSigners].sort((a, b) => {
-            const addrA = BigInt(a);
-            const addrB = BigInt(b);
-            if (addrA < addrB) return -1;
-            if (addrA > addrB) return 1;
-            return 0;
-        });
-        
-        const signersTree = new LeanIMT(hash)
-        for (var privateSigner of sortedPrivateSigners) {
-            /*0: Normal address
-            1: Poseidon Hash address*/
-            if(signersAddressesFormat == 0)
-                signersTree.insert(poseidon.hash([BigInt(privateSigner)]))
-            else if (signersAddressesFormat == 1) 
-                signersTree.insert(BigInt(privateSigner))
-            else
-                throw new Error("Invalid owner addresses format variable value (0: Normal address) or (1: Poseidon Hash address)");
+        // Build the signers tree and the salted state commitment via the shared helpers.
+        /*0: Normal address
+        1: Poseidon Hash address*/
+        if (signersAddressesFormat != 0 && signersAddressesFormat != 1) {
+            throw new Error("Invalid owner addresses format variable value (0: Normal address) or (1: Poseidon Hash address)");
         }
-        
-        // Compute state root (signers + threshold)
-        const stateTree = new LeanIMT(hash);
-        stateTree.insert(signersTree.root);
-        stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-        const finalStateRoot = stateTree.root;
+        const signersTree = buildSignersTree(privateSigners, signersAddressesFormat == 1);
+        const finalStateRoot = computeStateRoot(signersTree.root, BigInt(privateThreshold), salt);
         console.log("Computed state root:", toHex(finalStateRoot));
 
-        if(onChainStateRoot != toHex(finalStateRoot)){
-            throw new Error("Invalid state tree root");
+        if (BigInt(onChainStateRoot) != finalStateRoot) {
+            throw new Error("Invalid state tree root: the private signers, threshold or salt do not match the on-chain commitment");
         }
 
         const signersPathsProof: any[][] = [] //siblings
@@ -235,7 +213,10 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
         const merkleProofLength : any[] = []
         for (var signature of sortedSigs) {
             const recoveredAddress = await recoverAddress({hash: txHash, signature: signature});
-            const index= await signersTree.indexOf(poseidon.hash([BigInt(recoveredAddress)]));
+            const index= await signersTree.indexOf(addressLeaf(recoveredAddress));
+            if (index === -1) {
+                throw new Error(`Signer ${recoveredAddress} is not part of the private signer set`);
+            }
             const addressProof= await signersTree.generateProof(index);
 
             await signersPathsProof.push(padArray(addressProof.siblings.map(v => toHex(v)), MAX_DEPTH, "0x0"))
@@ -260,6 +241,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             })), 5, nil_pubkey),
             threshold: privateThreshold,
             signers_root:  toHex(signersTree.root),
+            salt: fieldToHex(salt),
             merkle_proof_length: padArray(merkleProofLength, 5, 0),
             indices: padArray(signersIndicesProof, 5, Array(MAX_DEPTH).fill(false)),
             siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
@@ -300,16 +282,18 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
 
 /**
  * Generates a ZK proof that validates the initial state configuration for a new signer proxy.
- * This proves that signers_root + threshold correctly hash to the provided state_root.
+ * This proves that signers_root + threshold + salt correctly hash to the provided state_root.
  * 
  * @param signersRoot - The Merkle root of the signers tree
  * @param threshold - The minimum number of signatures required
+ * @param salt - The private blinding salt of the commitment
  * @param stateRoot - The expected microchain ownership state root
  * @returns ProofData containing the proof and public inputs
  */
 export async function proveStateConfiguration(
     signersRoot: Hex,
     threshold: number,
+    salt: bigint,
     stateRoot: Hex
 ) {
     // Load compiled state validation circuit
@@ -332,10 +316,12 @@ export async function proveStateConfiguration(
         const input = {
             signers_root: signersRoot,
             threshold: threshold,
+            salt: fieldToHex(salt),
             on_chain_state_root: pad(stateRoot, { size: 32 })
         };
 
-        console.log("State validation inputs:", input);
+        // Never log the salt: it is the blinding factor of the on-chain commitment.
+        console.log("State validation inputs:", { ...input, salt: "<redacted>" });
 
         // Generate witness
         console.log("Generating witness for state validation...");
@@ -469,7 +455,8 @@ export async function createPrivateMultiSignersProxyContract(
     privateSigners: string[],
     privateThreshold: number,
     txValidationVerifierAddress: string,
-    factoryAddress: string
+    factoryAddress: string,
+    privateSalt?: string
 ) {
      // Get wallet client
     const pk = vars.get("DEPLOYER_PRIVATE_KEY") as string;
@@ -484,27 +471,13 @@ export async function createPrivateMultiSignersProxyContract(
 
     const factoryContract = await hre.viem.getContractAt("ZKMultiSigEcdsaFactory", factoryAddress as `0x${string}`);
 
-    // Sort signers for deterministic tree construction
-    const sortedPrivateSigners = [...privateSigners].sort((a, b) => {
-        const addrA = BigInt(a);
-        const addrB = BigInt(b);
-        if (addrA < addrB) return -1;
-        if (addrA > addrB) return 1;
-        return 0;
-    });
-    
-    //@ts-ignore
-    const signersTree = new LeanIMT(hash);
-    for (var privateSigner of sortedPrivateSigners) {
-        signersTree.insert(poseidon.hash([BigInt(privateSigner)]));
-    }
+    // Fresh random salt unless the caller supplies one (e.g. to re-create a known configuration).
+    const saltProvided = privateSalt !== undefined && privateSalt.trim() !== "";
+    const salt = saltProvided ? parseSalt(privateSalt) : generateSalt();
+    const saltHex = fieldToHex(salt);
 
-    // Build state tree (signers + threshold)
-    const stateTree = new LeanIMT(hash);
-    stateTree.insert(signersTree.root);
-    stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-    
-    const finalStateRoot = stateTree.root;
+    const signersTree = buildSignersTree(privateSigners);
+    const finalStateRoot = computeStateRoot(signersTree.root, privateThreshold, salt);
 
     const signersRootHex = toHex(signersTree.root) as Hex;
     const stateRootHex = toHex(finalStateRoot) as Hex;
@@ -519,6 +492,7 @@ export async function createPrivateMultiSignersProxyContract(
     const stateValidationProofData = await proveStateConfiguration(
         signersRootHex,
         privateThreshold,
+        salt,
         stateRootHex
     );
     console.log("✅ State validation proof generated");
@@ -553,15 +527,16 @@ export async function createPrivateMultiSignersProxyContract(
     console.log("   State root:", stateRootHex);
     console.log("   Gas used:", receipt.gasUsed.toString());
     console.log("   Block number:", receipt.blockNumber.toString());
+    printSaltBackupNotice(saltHex, saltProvided);
 
-    /*return {
+    return {
         signerAddress: predictedSignerAddress,
         stateRoot: stateRootHex,
         salt: saltHex,
-        verifier: verifier,
+        verifier: txValidationVerifierAddress,
         transactionHash: txHash,
         receipt: receipt
-    };*/
+    };
 
 }
 
