@@ -104,6 +104,10 @@ jobs:
     needs: noir
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # hardhat.config.ts requires these for every network. Throwaway keys for CI only, not secrets.
+      HARDHAT_VAR_DEPLOYER_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001"
+      HARDHAT_VAR_SAFE_OWNER_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000002"
     steps:
       - uses: actions/checkout@v4
         with:
