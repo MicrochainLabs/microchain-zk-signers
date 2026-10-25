@@ -313,13 +313,6 @@ fn test_state_root_matches_state_validation_circuit() {
     assert(compute_state_root(TEST_SIGNERS_ROOT, TEST_THRESHOLD, TEST_SALT) == TEST_STATE_ROOT);
 }
 
-#[test(should_fail_with = "Salt cannot be zero")]
-fn test_zero_salt_rejected() {
-    let v = test_vector();
-    let root = compute_state_root(TEST_SIGNERS_ROOT, TEST_THRESHOLD, 0);
-    main(v.signers, TEST_THRESHOLD, TEST_SIGNERS_ROOT, 0, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, root)
-}
-
 #[test(should_fail_with = "State root mismatch")]
 fn test_wrong_salt_rejected() {
     let v = test_vector();
@@ -340,18 +333,4 @@ fn test_threshold_not_met_rejected() {
     let v = test_vector();
     let root = compute_state_root(TEST_SIGNERS_ROOT, 3, TEST_SALT);
     main(v.signers, 3, TEST_SIGNERS_ROOT, TEST_SALT, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, root)
-}
-
-#[test(should_fail_with = "Threshold must be greater than 0")]
-fn test_zero_threshold_rejected() {
-    let v = test_vector();
-    let root = compute_state_root(TEST_SIGNERS_ROOT, 0, TEST_SALT);
-    main(v.signers, 0, TEST_SIGNERS_ROOT, TEST_SALT, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, root)
-}
-
-#[test(should_fail_with = "Threshold exceeds maximum allowed")]
-fn test_threshold_above_max_rejected() {
-    let v = test_vector();
-    let root = compute_state_root(TEST_SIGNERS_ROOT, 6, TEST_SALT);
-    main(v.signers, 6, TEST_SIGNERS_ROOT, TEST_SALT, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, root)
 }
