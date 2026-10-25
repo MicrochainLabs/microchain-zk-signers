@@ -22,6 +22,14 @@ export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
     }
   );
 
+  // Deploy RelationsLib library required by HonkVerifier
+  const relationsLib = m.library(
+    "noir/target/zk_multi_sig_ecdsa_private_state_validation.sol:RelationsLib",
+    {
+      id: "relationsLib"
+    }
+  );
+
   // Deploy the HonkVerifier for private state validation
   // Using fully qualified name since both circuits export "HonkVerifier"
   const privateStateValidationHonkVerifier = m.contract(
@@ -30,7 +38,8 @@ export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
     {
       id: "privateStateValidationHonkVerifier",
       libraries: {
-        ZKTranscriptLib: zkTranscriptLib
+        ZKTranscriptLib: zkTranscriptLib,
+        RelationsLib: relationsLib
       }
     }
   );
@@ -45,6 +54,14 @@ export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
     }
   );
 
+  // Deploy RelationsLib library for transaction validation circuit
+  const relationsLibTx = m.library(
+    "noir/target/zk_multi_sig_ecdsa.sol:RelationsLib",
+    {
+      id: "relationsLibTx"
+    }
+  );
+
   // Deploy the HonkVerifier for signature verification
   // Using fully qualified name to distinguish from state validation verifier
   const txValidationHonkVerifier = m.contract(
@@ -53,7 +70,8 @@ export default buildModule("ZKMultiSigEcdsaFactory_v1", (m) => {
     {
       id: "txValidationHonkVerifier",
       libraries: {
-        ZKTranscriptLib: zkTranscriptLibTx
+        ZKTranscriptLib: zkTranscriptLibTx,
+        RelationsLib: relationsLibTx
       }
     }
   );

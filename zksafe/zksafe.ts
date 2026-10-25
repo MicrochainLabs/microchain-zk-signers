@@ -243,7 +243,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
 
             const merkleProofIndices = []
             for (let i = 0; i < MAX_DEPTH; i += 1) {
-                merkleProofIndices.push((addressProof.index >> i) & 1)
+                merkleProofIndices.push(((addressProof.index >> i) & 1) === 1)
             }
              
             await signersIndicesProof.push(merkleProofIndices)
@@ -261,7 +261,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             threshold: privateThreshold,
             signers_root:  toHex(signersTree.root),
             merkle_proof_length: padArray(merkleProofLength, 5, 0),
-            indices: padArray(signersIndicesProof, 5, defaultTxSigSiblingsOrIndices),
+            indices: padArray(signersIndicesProof, 5, Array(MAX_DEPTH).fill(false)),
             siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
             signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 5, nil_signature),
             txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
@@ -482,6 +482,8 @@ export async function createPrivateMultiSignersProxyContract(
     const mywalletAddress = walletClient.account!.address;
     console.log("My wallet address: ", mywalletAddress);
 
+    const factoryContract = await hre.viem.getContractAt("ZKMultiSigEcdsaFactory", factoryAddress as `0x${string}`);
+
     // Sort signers for deterministic tree construction
     const sortedPrivateSigners = [...privateSigners].sort((a, b) => {
         const addrA = BigInt(a);
@@ -521,9 +523,6 @@ export async function createPrivateMultiSignersProxyContract(
     );
     console.log("✅ State validation proof generated");
 
-    // Get the factory contract
-    const factoryContract = await hre.viem.getContractAt("ZKMultiSigEcdsaFactory", factoryAddress as `0x${string}`);
-    
     // Get the predicted signer address (deterministic via CREATE2)
     console.log("\n📍 Computing signer address...");
     const stateRootAsBytes32 = pad(stateRootHex, { size: 32 }) as `0x${string}`;

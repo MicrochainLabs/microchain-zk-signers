@@ -4,5 +4,5 @@ type = "bin"
 authors = ["Walid Khemiri"]
 
 [dependencies]
-binary_merkle_root = { git = "https://github.com/privacy-scaling-explorations/zk-kit.noir", tag = "binary-merkle-root-v0.0.1", directory = "packages/binary-merkle-root" }
-poseidon = { tag = "v0.2.0", git = "https://github.com/noir-lang/poseidon" }
+trees = { git = "https://github.com/zk-kit/zk-kit.noir", tag = "merkle-trees-v0.0.3", directory = "packages/merkle-trees" }
+poseidon = { git = "https://github.com/noir-lang/poseidon", tag = "v0.3.0" }
