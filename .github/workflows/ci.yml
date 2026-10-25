@@ -72,7 +72,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Top-level submodules only: nested ones (e.g. lib/solarray/lib/forge-std) add remapping
+          # contexts that hardhat-foundry rejects.
+          submodules: true
 
       - uses: actions/download-artifact@v4
         with:
@@ -111,7 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
 
       - uses: actions/download-artifact@v4
         with:
