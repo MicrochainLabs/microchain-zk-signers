@@ -4,5 +4,4 @@ type = "bin"
 authors = ["Walid Khemiri"]
 
 [dependencies]
-trees = { git = "https://github.com/zk-kit/zk-kit.noir", tag = "merkle-trees-v0.0.3", directory = "packages/merkle-trees" }
 poseidon = { git = "https://github.com/noir-lang/poseidon", tag = "v0.3.0" }

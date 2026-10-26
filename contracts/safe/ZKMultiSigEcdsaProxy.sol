@@ -31,7 +31,7 @@ contract ZKMultiSigEcdsaProxy {
      * private state validation proof first. This guarantees every proxy pointing at the official
      * singleton went through state validation (e.g. no `threshold == 0` configurations).
      * @param singleton The {ZKMultiSigEcdsaSingleton} implementation to proxy to.
-     * @param stateRoot The Merkle root of authorized signers.
+     * @param stateRoot The salted commitment to the private signer set + threshold.
      * @param verifier The address of the IERC8039-HonkVerifier contract.
      */
     constructor(address singleton, bytes32 stateRoot, address verifier) {

@@ -10,6 +10,7 @@ Thank you for your interest in contributing! This protocol sits at the intersect
 - [Project Structure](#project-structure)
 - [Making Changes](#making-changes)
 - [Running Tests](#running-tests)
+- [Branching Model](#branching-model)
 - [Submitting a Pull Request](#submitting-a-pull-request)
 - [Good First Issues](#good-first-issues)
 
@@ -30,11 +31,11 @@ Install the following tools before starting:
 | [Node.js](https://nodejs.org/) | v18+ | TypeScript tooling |
 | [pnpm](https://pnpm.io/) | latest | Package manager |
 | [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`, `cast`) | latest | Solidity compilation & testing |
-| [Nargo](https://noir-lang.org/docs/getting_started/installation/) | compatible with `1.0.0-beta.18` | Noir circuit compilation |
+| [Nargo](https://noir-lang.org/docs/getting_started/installation/) | compatible with `1.0.0-beta.22` | Noir circuit compilation |
 | [Barretenberg CLI](https://github.com/AztecProtocol/aztec-packages/tree/master/barretenberg) (`bb`) | latest nightly | Proof generation & Solidity verifier generation |
 | Git | any | Source control |
 
-> **Note on Noir/bb versions**: The project uses `@noir-lang/noir_js@1.0.0-beta.18` and `@aztec/bb.js@3.0.0-nightly.20260102`. Use matching Nargo and `bb` CLI versions to avoid circuit compatibility issues.
+> **Note on Noir/bb versions**: The project uses `@noir-lang/noir_js@1.0.0-beta.22` and `@aztec/bb.js@5.0.0-nightly.20260522`. Use matching Nargo and `bb` CLI versions to avoid circuit compatibility issues.
 
 ---
 
@@ -143,16 +144,33 @@ cd noir/zk_multi_sig_ecdsa_private_state_validation && nargo test
 
 ---
 
+## Branching Model
+
+| Branch | Purpose |
+|---|---|
+| `main` | Latest released / audited code. Every commit is a tagged release (`vX.Y.Z`). Protected: no direct pushes. |
+| `develop` | Integration branch for the next release. **All contributor PRs target this branch.** Protected: PR-only, CI and review required. |
+
+Short-lived branches:
+
+- `feat/*`, `fix/*`, `docs/*`, `test/*`, `chore/*`: branch from `develop`, merge back into `develop` via PR (squash-merge).
+- `release/x.y.z` (maintainers): branch from `develop` to stabilise a release, then merge into `main`, tag, and merge back into `develop`.
+- `hotfix/*` (maintainers): branch from `main` for urgent fixes (e.g. security), merge into `main`, tag a patch release, then merge back into `develop`.
+
+Releases are cut by merging `develop` (or a `release/*` branch) into `main` with a merge commit. To release, bump `version` in `package.json` in the PR that goes to `main`. Once CI passes on `main`, the [Release workflow](.github/workflows/release.yml) creates the `vX.Y.Z` tag and a GitHub Release with auto-generated notes plus the compiled circuits and Solidity verifiers. If the version is unchanged (tag already exists), no release is created. Versions containing a hyphen (e.g. `2.1.0-rc.1`) are published as pre-releases. Security issues must **not** be reported through public PRs; see [SECURITY.md](./SECURITY.md).
+
+---
+
 ## Submitting a Pull Request
 
-1. **Fork** the repository and create a branch from `main`:
+1. **Fork** the repository and create a branch from `develop`:
    ```bash
    git checkout -b feat/your-feature-name
    ```
 2. Make your changes and **commit with clear messages**.
 3. Ensure **all tests pass** before opening a PR.
 4. If you modified Noir circuits, include **regenerated Solidity verifiers** in the PR.
-5. Open a PR against `main` and fill in the pull request template.
+5. Open a PR against `develop` and fill in the pull request template.
 6. A maintainer will review and may request changes.
 
 ### Commit message conventions

@@ -1,9 +1,9 @@
 {
-  "name": "zksafe",
-  "version": "2.0.0",
-  "description": "Safe with ZK Signing",
+  "name": "zk-multi-signers",
+  "version": "0.0.1",
+  "description": "Smart account with ZK Signing",
   "main": "index.js",
-  "author": "Valeriy Zamaraiev <v@1kx.capital>",
+  "author": "Walid Khemiri",
   "license": "Apache-2.0",
   "scripts": {
     "compile": "npx hardhat compile",

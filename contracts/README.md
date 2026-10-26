@@ -460,7 +460,9 @@ During ERC-4337 validation, avoid storage access:
 Current implementation uses `salt=0`:
 - Simple and predictable
 - Each `(stateRoot, verifier)` pair has one unique address
-- If you need multiple proxies with same config, modify the salt
+- Because `stateRoot` already contains a per-account random private salt (see the root README,
+  "State Root Construction"), two accounts with the same signers and threshold still get distinct
+  roots and therefore distinct addresses; no CREATE2 salt is needed for that
 
 ---
 

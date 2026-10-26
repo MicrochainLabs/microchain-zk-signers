@@ -20,8 +20,7 @@ import {
     walletActions
 } from "viem";
 import factory from "../ignition/modules/zkMultiSigEcdsaFactoryNexus";
-import { poseidon } from "@iden3/js-crypto";
-import { LeanIMT } from "@zk-kit/lean-imt";
+import { addressLeaf, buildSignersTree, computeStateRoot, fieldToHex, generateSalt, parseSalt, printSaltBackupNotice } from "../zkcommon/stateRoot";
 import crypto from 'crypto';
 import { join } from "path";
 import { Noir } from "@noir-lang/noir_js";
@@ -79,9 +78,6 @@ function extractRSFromSignature(sig: Hex): number[] {
 function ensureHexPrefix(value: string): `0x${string}` {
     return value.startsWith("0x") ? value as `0x${string}` : `0x${value}`;
 }
-
-// Hash function used to compute the tree nodes.
-const hash = (a: bigint, b: bigint) => poseidon.hash([a, b])
 
 /**
  * Helper class for ZK MultiSig Nexus operations
@@ -342,6 +338,7 @@ export default ZKNexusHelper;
 export async function proveStateConfiguration(
     signersRoot: Hex,
     threshold: number,
+    salt: bigint,
     stateRoot: Hex
 ) {
     // Load compiled state validation circuit
@@ -364,10 +361,12 @@ export async function proveStateConfiguration(
         const input = {
             signers_root: signersRoot,
             threshold: threshold,
+            salt: fieldToHex(salt),
             on_chain_state_root: pad(stateRoot, { size: 32 })
         };
 
-        console.log("State validation inputs:", input);
+        // Never log the salt: it is the blinding factor of the on-chain commitment.
+        console.log("State validation inputs:", { ...input, salt: "<redacted>" });
 
         // Generate witness
         console.log("Generating witness for state validation...");
@@ -408,6 +407,8 @@ export async function proveWithExistingSignatures(
     signatures: Hex[],
     privateSigners: string[],
     privateThreshold: number,
+    salt: bigint,
+    onChainStateRoot: Hex,
     signersAddressesFormat: number = 0
 ) {
     const MAX_DEPTH = 4;
@@ -431,37 +432,25 @@ export async function proveWithExistingSignatures(
     console.log("=== proveWithExistingSignatures Debug ===");
     console.log("Recovered signers from signatures:", sortedSignatures.map(s => s.addr));
 
-    // Sort signers for deterministic tree construction (normalize to lowercase)
-    const sortedPrivateSigners = [...privateSigners].map(s => s.toLowerCase()).sort((a, b) => {
-        const addrA = BigInt(a);
-        const addrB = BigInt(b);
-        if (addrA < addrB) return -1;
-        if (addrA > addrB) return 1;
-        return 0;
-    });
-    
-    console.log("Sorted private signers for tree:", sortedPrivateSigners);
-    
-    //@ts-ignore
-    const signersTree = new LeanIMT(hash);
-    for (const privateSigner of sortedPrivateSigners) {
-        if (signersAddressesFormat == 0)
-            signersTree.insert(poseidon.hash([BigInt(privateSigner)]));
-        else if (signersAddressesFormat == 1)
-            signersTree.insert(BigInt(privateSigner));
-        else
-            throw new Error("Invalid owner addresses format");
+    // Build the signers tree and the salted state commitment via the shared helpers.
+    if (signersAddressesFormat != 0 && signersAddressesFormat != 1) {
+        throw new Error("Invalid owner addresses format");
     }
-    
+    const sortedPrivateSigners = [...privateSigners].map(s => s.toLowerCase());
+    const signersTree = buildSignersTree(sortedPrivateSigners, signersAddressesFormat == 1);
+
     console.log("Signers tree size:", signersTree.size);
     console.log("Signers tree root:", toHex(signersTree.root));
-    
-    // Compute state root (signers + threshold)
-    const stateTree = new LeanIMT(hash);
-    stateTree.insert(signersTree.root);
-    stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-    const finalStateRoot = stateTree.root;
+
+    const finalStateRoot = computeStateRoot(signersTree.root, privateThreshold, salt);
     console.log("Computed state root:", toHex(finalStateRoot));
+    console.log("On-chain state root:", onChainStateRoot);
+    if (BigInt(onChainStateRoot) != finalStateRoot) {
+        throw new Error(
+            "Computed state root does not match the on-chain commitment.\n" +
+            "Make sure --privatesigners, --privatethreshold and --privatesalt are the values used when creating the account."
+        );
+    }
 
     // Generate merkle proofs for each signer
     const signersPathsProof: any[][] = [];
@@ -470,7 +459,7 @@ export async function proveWithExistingSignatures(
     
     for (const signature of sortedSigs) {
         const recoveredAddress = (await recoverAddress({ hash: txHash, signature: signature })).toLowerCase();
-        const index = await signersTree.indexOf(poseidon.hash([BigInt(recoveredAddress)]));
+        const index = await signersTree.indexOf(addressLeaf(recoveredAddress));
         
         if (index === -1) {
             throw new Error(
@@ -507,6 +496,7 @@ export async function proveWithExistingSignatures(
         })), 5, nil_pubkey),
         threshold: toHex(BigInt(privateThreshold)),
         signers_root: toHex(signersTree.root),
+        salt: fieldToHex(salt),
         merkle_proof_length: padArray(merkleProofLength, 5, 0),
         indices: padArray(signersIndicesProof, 5, Array(MAX_DEPTH).fill(false)),
         siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
@@ -727,8 +717,10 @@ export async function sendZKNexusUserOp(
     signatures: Hex[],
     userOpHash: Hex,
     privateSigners: string[],
-    privateThreshold: number
+    privateThreshold: number,
+    privateSalt: string
 ) {
+    const salt = parseSalt(privateSalt);
     const pk = vars.get("DEPLOYER_PRIVATE_KEY") as string;
     const networkConfig = hre.network.config as any;
     const publicClient = createPublicClient({
@@ -910,7 +902,9 @@ export async function sendZKNexusUserOp(
         userOpHash,
         signatures,
         privateSigners,
-        privateThreshold
+        privateThreshold,
+        salt,
+        onChainStateRoot
     );
 
     // Set the proof as signature
@@ -1210,6 +1204,7 @@ export async function createZKNexusAccount(
     privateThreshold: number,
     moduleValidatorAddress: string,
     factoryAddress: string,
+    privateSalt?: string
 ) {
     const pk = vars.get("DEPLOYER_PRIVATE_KEY") as string;
     const deployerAccount = privateKeyToAccount(ensureHexPrefix(pk));
@@ -1224,27 +1219,13 @@ export async function createZKNexusAccount(
     console.log("  Factory:", factoryAddress);
 
 
-    // Sort signers for deterministic tree construction
-    const sortedPrivateSigners = [...privateSigners].sort((a, b) => {
-        const addrA = BigInt(a);
-        const addrB = BigInt(b);
-        if (addrA < addrB) return -1;
-        if (addrA > addrB) return 1;
-        return 0;
-    });
-        
-    //@ts-ignore
-    const signersTree = new LeanIMT(hash);
-    for (var privateSigner of sortedPrivateSigners) {
-        signersTree.insert(poseidon.hash([BigInt(privateSigner)]));
-    }
-    
-    // Build preliminary state tree (signers + threshold)
-    const stateTree = new LeanIMT(hash);
-    stateTree.insert(signersTree.root);
-    stateTree.insert(poseidon.hash([BigInt(privateThreshold)]));
-    
-    const finalStateRoot = stateTree.root;
+    // Fresh random salt unless the caller supplies one (e.g. to re-create a known configuration).
+    const saltProvided = privateSalt !== undefined && privateSalt.trim() !== "";
+    const salt = saltProvided ? parseSalt(privateSalt) : generateSalt();
+    const saltHex = fieldToHex(salt);
+
+    const signersTree = buildSignersTree(privateSigners);
+    const finalStateRoot = computeStateRoot(signersTree.root, privateThreshold, salt);
     
     const signersRootHex = toHex(signersTree.root) as Hex;
     const stateRootHex = toHex(finalStateRoot) as Hex;
@@ -1259,6 +1240,7 @@ export async function createZKNexusAccount(
     const stateValidationProofData = await proveStateConfiguration(
         signersRootHex,
         privateThreshold,
+        salt,
         stateRootHex
     );
     console.log("✅ State validation proof generated");
@@ -1288,6 +1270,9 @@ export async function createZKNexusAccount(
         console.log("   Gas used:", receipt.gasUsed.toString());
         console.log("   Block number:", receipt.blockNumber.toString());
     }
+    printSaltBackupNotice(saltHex, saltProvided);
+
+    return { account, stateRoot: stateRootHex, salt: saltHex, transactionHash: transaction };
 }
 
 export async function createPrivateMultiSignersModuleFactoryContract(hre: HardhatRuntimeEnvironment) {

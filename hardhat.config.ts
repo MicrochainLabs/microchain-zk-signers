@@ -45,7 +45,8 @@ task("prove", "Prove a zksafe transaction")
     .addParam("privatesigners", "Comma separated list of private signers")
     .addParam("privatethreshold", "Private threshold")
     .addParam("signersaddressesformat", "Owner address format: normal or hash")
-    .setAction(async (taskArgs, hre) => prove(hre, taskArgs.safe, taskArgs.txhash, taskArgs.signatures, taskArgs.privatethreshold, taskArgs.privatesigners.split(","), taskArgs.signersaddressesformat));
+    .addParam("privatesalt", "Private salt printed when the signer proxy was created (hex or decimal)")
+    .setAction(async (taskArgs, hre) => prove(hre, taskArgs.safe, taskArgs.txhash, taskArgs.signatures, taskArgs.privatethreshold, taskArgs.privatesigners.split(","), taskArgs.signersaddressesformat, taskArgs.privatesalt));
     
 task("sign", "Sign Safe transaction")
     .addParam("safe", "Address of the Safe")
@@ -64,7 +65,8 @@ task("createPrivateMultiSignersProxyContract", "Create a private multi signers c
     .addParam("privatethreshold", "Private threshold")
     .addParam("txvalidationverifieraddress", " TX Validation Verifier address")
     .addParam("factoryaddress", "Factory contract signature address")
-    .setAction(async (taskArgs, hre) => createPrivateMultiSignersProxyContract(hre, taskArgs.privatesigners.split(","), taskArgs.privatethreshold, taskArgs.txvalidationverifieraddress, taskArgs.factoryaddress));
+    .addOptionalParam("privatesalt", "Private salt to reuse (hex or decimal). A fresh random salt is generated and printed when omitted", "")
+    .setAction(async (taskArgs, hre) => createPrivateMultiSignersProxyContract(hre, taskArgs.privatesigners.split(","), taskArgs.privatethreshold, taskArgs.txvalidationverifieraddress, taskArgs.factoryaddress, taskArgs.privatesalt));
 
 task("createFactory", "Create Factor")
     .setAction(async (taskArgs, hre) => createPrivateMultiSignersFactoryContract(hre));
@@ -85,6 +87,7 @@ task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-
     .addParam("userophash", "UserOp hash from signUserOp")
     .addParam("privatesigners", "Comma separated list of private signer addresses")
     .addParam("privatethreshold", "Private threshold")
+    .addParam("privatesalt", "Private salt printed when the account was created (hex or decimal)")
     .setAction(async (taskArgs, hre) => sendZKNexusUserOp(
         hre,
         taskArgs.account,
@@ -96,7 +99,8 @@ task("sendZKNexusUserOp", "Send a UserOperation using ZK Nexus account with pre-
         taskArgs.signatures.split(",") as `0x${string}`[],
         taskArgs.userophash as `0x${string}`,
         taskArgs.privatesigners.split(","),
-        parseInt(taskArgs.privatethreshold)
+        parseInt(taskArgs.privatethreshold),
+        taskArgs.privatesalt
     ));
 
 task("signUserOp", "Sign a UserOperation for a Nexus account (like zksafe sign)")
@@ -119,12 +123,14 @@ task("createZKNexusAccount", "Create a new ZK MultiSig Nexus account")
     .addParam("privatethreshold", "Private threshold")
     .addParam("modulevalidatoraddress", "Validator contract address")
     .addParam("factoryaddress", "Factory contract address")
+    .addOptionalParam("privatesalt", "Private salt to reuse (hex or decimal). A fresh random salt is generated and printed when omitted", "")
     .setAction(async (taskArgs, hre) => createZKNexusAccount(
         hre,
         taskArgs.privatesigners.split(","),
         taskArgs.privatethreshold,
         taskArgs.modulevalidatoraddress,
-        taskArgs.factoryaddress
+        taskArgs.factoryaddress,
+        taskArgs.privatesalt
     ));
 
 task("createModuleFactory", "Create Factor")
