@@ -1,5 +1,9 @@
 # Microchain ZK Signers
 
+[![CI](https://github.com/MicrochainLabs/microchain-zk-signers/actions/workflows/ci.yml/badge.svg)](https://github.com/MicrochainLabs/microchain-zk-signers/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE.txt)
+[![Release](https://img.shields.io/github/v/release/MicrochainLabs/microchain-zk-signers?include_prereleases)](https://github.com/MicrochainLabs/microchain-zk-signers/releases)
+
 **Privacy-preserving multi-signature smart account using zero-knowledge proofs**
 
 ## Overview
@@ -1073,7 +1077,19 @@ const largeTxUserOp = {
 
 ## License
 
-LGPL-3.0-only - See [LICENSE.txt](./LICENSE.txt)
+Apache-2.0 - See [LICENSE.txt](./LICENSE.txt) and [NOTICE](./NOTICE). Third-party dependencies (Safe, Nexus, OpenZeppelin, Barretenberg, ...) remain under their own licenses.
+
+## Security
+
+Please report vulnerabilities privately as described in [SECURITY.md](./SECURITY.md).
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](./CODE_OF_CONDUCT.md).
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md). Releases are published automatically from `main` — see [Releases](https://github.com/MicrochainLabs/microchain-zk-signers/releases).
 
 ## Contributing
 
