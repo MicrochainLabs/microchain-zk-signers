@@ -5,6 +5,15 @@
   "main": "index.js",
   "author": "Walid Khemiri",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MicrochainLabs/microchain-zk-signers.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MicrochainLabs/microchain-zk-signers/issues"
+  },
+  "homepage": "https://github.com/MicrochainLabs/microchain-zk-signers#readme",
+  "keywords": ["zero-knowledge", "noir", "account-abstraction", "multisig", "erc-8039", "safe", "erc-7579"],
   "scripts": {
     "compile": "npx hardhat compile",
     "test": "npx hardhat test"

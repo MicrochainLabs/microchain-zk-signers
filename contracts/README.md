@@ -582,5 +582,5 @@ The ZK circuit must:
 
 ## License
 
-LGPL-3.0-only
+Apache-2.0 — see [LICENSE.txt](../LICENSE.txt)
 

@@ -18,7 +18,7 @@ Thank you for your interest in contributing! This protocol sits at the intersect
 
 ## Code of Conduct
 
-Be respectful, constructive, and collaborative. Harassment of any kind is not tolerated.
+This project follows the [Contributor Covenant](./CODE_OF_CONDUCT.md). By participating you agree to uphold it. Report unacceptable behavior to the maintainers at **security@microchainlabs.xyz**.
 
 ---
 
