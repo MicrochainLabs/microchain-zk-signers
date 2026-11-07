@@ -273,8 +273,9 @@ Where:
 - `threshold` is the M-of-N signature requirement
 - `salt` is a uniformly random, non-zero BN254 field element (≥ 248 bits of entropy) chosen once per account
 
-The reference implementation lives in [`zkcommon/stateRoot.ts`](zkcommon/stateRoot.ts) (`computeStateRoot`,
-`buildSignersTree`, `generateSalt`, `parseSalt`) and must match `compute_state_root` in both Noir circuits;
+The reference implementation is provided by [`zk-smart-account-kit-sdk`](https://www.npmjs.com/package/zk-smart-account-kit-sdk)
+(`zk-smart-account-kit-sdk/zk-multisig`: `computeStateRoot`, `buildMultiSigTree`, `generateSalt`, `parseSalt`,
+`createMultiSigState`, `generateMultiSigProof`, `generateStateValidationProof`) and must match `compute_state_root` in both Noir circuits;
 the shared test vector is checked on both sides (`nargo test`, `test/stateRoot.spec.ts`).
 
 **Why a salt?** `signers_merkle_root` and `threshold` are deterministic functions of public data
@@ -729,10 +730,9 @@ const factory = await ethers.deployContract("ZKMultiSigValidatorFactory", [
     registry  // optional, can be address(0)
 ]);
 
-// 2. Generate state root from your private configuration (zkcommon/stateRoot.ts)
-const salt = generateSalt();                    // back this up with the signer list!
-const signersRoot = buildSignersTree(signers).root;
-const stateRoot = toHex(computeStateRoot(signersRoot, threshold, salt));
+// 2. Generate state root from your private configuration (zk-smart-account-kit-sdk)
+const state = createMultiSigState({ signers, threshold });  // generates a salt: back it up with the signer list!
+const stateRoot = toHex(state.stateRoot);
 
 // 3. Create Nexus account with ZK validator
 const accountAddress = await factory.createAccount(
@@ -765,8 +765,8 @@ nexusAccount.installModule(
 
 ```typescript
 import { toHex } from "viem";
-import { buildSignersTree, computeStateRoot, generateSalt } from "./zkcommon/stateRoot";
-import { proveStateConfiguration } from "./zknexus/zknexus";
+import { createMultiSigState, generateStateValidationProof } from "zk-smart-account-kit-sdk/zk-multisig";
+import { loadCircuit } from "./zkcommon/zkMultiSig";
 
 // Define your private signers (off-chain only)
 const privateSigners = [
@@ -775,12 +775,14 @@ const privateSigners = [
     "0x9876...5432"   // Signer 3 address
 ];
 const threshold = 2;  // 2-of-3 required
-const salt = generateSalt();  // random blinding factor — back it up with the signer list!
 
-// Generate the hiding state root commitment and its validity proof
-const signersRoot = buildSignersTree(privateSigners).root;
-const stateRoot = toHex(computeStateRoot(signersRoot, threshold, salt));
-const stateValidationProof = await proveStateConfiguration(toHex(signersRoot), threshold, salt, stateRoot);
+// Derive the hiding state root commitment (generates a random salt) and its validity proof
+const state = createMultiSigState({ signers: privateSigners, threshold });
+const stateRoot = toHex(state.stateRoot);
+const { proof: stateValidationProof } = await generateStateValidationProof(
+    state,
+    loadCircuit("zk_multi_sig_ecdsa_private_state_validation")
+);
 
 // Deploy Nexus account via factory
 const nexusAccount = await factory.createAccount(
@@ -793,7 +795,7 @@ const nexusAccount = await factory.createAccount(
 
 console.log("Nexus account deployed:", nexusAccount);
 console.log("Private signers:", privateSigners, "(never revealed on-chain!)");
-console.log("Private salt:", toHex(salt), "(store securely — required for every proof)");
+console.log("Private salt:", toHex(state.salt), "(store securely — required for every proof)");
 ```
 
 #### Example 2: Submit UserOperation with ZK Proof
