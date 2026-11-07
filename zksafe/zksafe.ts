@@ -1,59 +1,14 @@
-import { zeroAddress, parseEther, toHex, Account, toBytes, recoverAddress, recoverPublicKey, Hex, createWalletClient, http, WalletClient, pad, bytesToHex } from "viem";
+import { zeroAddress, parseEther, toHex, Account, Hex, createWalletClient, http, WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { formatEther } from 'viem';
 import Safe, { EthSafeSignature } from '@safe-global/protocol-kit';
 import { SafeTransactionData } from '@safe-global/types-kit';
-import assert from 'assert';
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { vars } from "hardhat/config";
-import crypto from 'crypto';
+import { fieldToBytes32, parseSalt, type ProveOptions } from "zk-smart-account-kit-sdk/zk-multisig";
 
 import factory from "../ignition/modules/zkMultiSigEcdsaFactory";
-import { addressLeaf, buildSignersTree, computeStateRoot, fieldToHex, generateSalt, parseSalt, printSaltBackupNotice } from "../zkcommon/stateRoot";
-
-// Native Noir packages (bypassing outdated hardhat-noir)
-// Install with: pnpm add @noir-lang/noir_js @aztec/bb.js
-import { Noir } from "@noir-lang/noir_js";
-import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js";
-import { readFileSync } from "fs";
-import { join } from "path";
-
-/// Extract x and y coordinates from a serialized ECDSA public key.
-export function extractCoordinates(serializedPubKey: string): { x: number[], y: number[] } {
-    // Ensure the key starts with '0x04' which is typical for an uncompressed key.
-    if (!serializedPubKey.startsWith('0x04')) {
-        throw new Error('The public key does not appear to be in uncompressed format.');
-    }
-
-    // The next 64 characters after the '0x04' are the x-coordinate.
-    let xHex = serializedPubKey.slice(4, 68);
-
-    // The following 64 characters are the y-coordinate.
-    let yHex = serializedPubKey.slice(68, 132);
-
-    // Convert the hex string to a byte array.
-    let xBytes = Array.from(Buffer.from(xHex, 'hex'));
-    let yBytes = Array.from(Buffer.from(yHex, 'hex'));
-    return { x: xBytes, y: yBytes };
-}
-
-export function extractRSFromSignature(signatureHex: string): number[] {
-    if (signatureHex.length !== 132 || !signatureHex.startsWith('0x')) {
-        throw new Error('Signature should be a 132-character hex string starting with 0x.');
-    }
-    return Array.from(Buffer.from(signatureHex.slice(2, 130), 'hex'));
-}
-
-export function addressToArray(address: string): number[] {
-    if (address.length !== 42 || !address.startsWith('0x')) {
-        throw new Error('Address should be a 40-character hex string starting with 0x.');
-    }
-    return Array.from(toBytes(address));
-}
-
-export function padArray(arr: any[], length: number, fill: any = 0) {
-    return arr.concat(Array(length - arr.length).fill(fill));
-}
+import { deriveState, printSaltBackupNotice, proveStateValidation, proveTransaction, signersFormatFromFlag } from "../zkcommon/zkMultiSig";
 
 function ensureHexPrefix(value: string): `0x${string}` {
     return value.startsWith("0x") ? value as `0x${string}` : `0x${value}`;
@@ -113,7 +68,7 @@ export async function send(hre: any, safeAddr: string, to: string, value: string
 
 }
 
-export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateThreshold: number, privateSigners: string[], signersAddressesFormat: number, privateSalt: string) {
+export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateThreshold: number | string, privateSigners: string[], signersAddressesFormat: number | string, privateSalt: string) {
     const salt = parseSalt(privateSalt);
     // Initialize Safe - we need it to prepare the witness (owners/threeshold) from onchain data.
     const safe = await Safe.init({
@@ -162,197 +117,19 @@ export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, tx
     console.log("Private threshold:", privateThreshold);
         
     const proofData = await proveTransactionSignatures(hre, signatures as Hex[], txHash as Hex, privateSigners, signersAddressesFormat, toHex(BigInt(privateThreshold)), salt, onChainStateRoot as Hex);
-    console.log("Proof: ", toHex(proofData.proof));
+    console.log("Proof: ", proofData.proof);
     console.log("Public inputs:", proofData.publicInputs);
 }
 
-export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, signatures: Hex[], txHash: Hex, privateSigners: string[], signersAddressesFormat: number, privateThreshold: Hex, salt: bigint, onChainStateRoot: Hex) {
-        // Load compiled circuit directly from filesystem (bypassing hardhat-noir)
-        const circuitPath = join(process.cwd(), "noir", "target", "zk_multi_sig_ecdsa.json");
-        const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
-        
-        // Initialize UltraHonk backend with bytecode and Noir for witness generation
-        const api = await Barretenberg.new({ threads: 1 });
-        const backend = new UltraHonkBackend(compiledCircuit.bytecode,  api )
-        const noir = new Noir(compiledCircuit);
-        console.log("UltraHonk backend initialized (bypassing hardhat-noir)");
-
-        const MAX_DEPTH = 4; //to be passed as paramter
-        const nil_pubkey = {
-            x: Array.from(toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")),
-            y: Array.from(toBytes("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"))
-        };
-        // Our Nil signature is a signature with r and s set to the generator point.
-        const nil_signature = Array.from(
-            toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"));
-
-        // Sort signatures by address - this is how the Safe contract does it.
-        const sortedSignatures = await Promise.all(signatures.map(async (sig) => {
-            const addr = await recoverAddress({hash: txHash, signature: sig});
-            return { sig, addr };
-        }));
-        sortedSignatures.sort((a, b) => a.addr.localeCompare(b.addr));
-        const sortedSigs = sortedSignatures.map(s => s.sig);
-
-        // Build the signers tree and the salted state commitment via the shared helpers.
-        /*0: Normal address
-        1: Poseidon Hash address*/
-        if (signersAddressesFormat != 0 && signersAddressesFormat != 1) {
-            throw new Error("Invalid owner addresses format variable value (0: Normal address) or (1: Poseidon Hash address)");
-        }
-        const signersTree = buildSignersTree(privateSigners, signersAddressesFormat == 1);
-        const finalStateRoot = computeStateRoot(signersTree.root, BigInt(privateThreshold), salt);
-        console.log("Computed state root:", toHex(finalStateRoot));
-
-        if (BigInt(onChainStateRoot) != finalStateRoot) {
-            throw new Error("Invalid state tree root: the private signers, threshold or salt do not match the on-chain commitment");
-        }
-
-        const signersPathsProof: any[][] = [] //siblings
-        const signersIndicesProof: any[][] = [] //indices
-        const merkleProofLength : any[] = []
-        for (var signature of sortedSigs) {
-            const recoveredAddress = await recoverAddress({hash: txHash, signature: signature});
-            const index= await signersTree.indexOf(addressLeaf(recoveredAddress));
-            if (index === -1) {
-                throw new Error(`Signer ${recoveredAddress} is not part of the private signer set`);
-            }
-            const addressProof= await signersTree.generateProof(index);
-
-            await signersPathsProof.push(padArray(addressProof.siblings.map(v => toHex(v)), MAX_DEPTH, "0x0"))
-            merkleProofLength.push(addressProof.siblings.length)
-
-            const merkleProofIndices = []
-            for (let i = 0; i < MAX_DEPTH; i += 1) {
-                merkleProofIndices.push(((addressProof.index >> i) & 1) === 1)
-            }
-             
-            await signersIndicesProof.push(merkleProofIndices)
-        }
-        
-        const defaultTxSigSiblingsOrIndices = Array(MAX_DEPTH).fill("0x0");
-        const input = {
-            signers: padArray(await Promise.all(sortedSigs.map(async (sig) => {
-                const pubKey = await recoverPublicKey({
-                    hash: txHash as `0x${string}`,
-                    signature: sig
-                });
-                return extractCoordinates(pubKey);
-            })), 5, nil_pubkey),
-            threshold: privateThreshold,
-            signers_root:  toHex(signersTree.root),
-            salt: fieldToHex(salt),
-            merkle_proof_length: padArray(merkleProofLength, 5, 0),
-            indices: padArray(signersIndicesProof, 5, Array(MAX_DEPTH).fill(false)),
-            siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
-            signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 5, nil_signature),
-            txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
-            on_chain_state_root: toHex(finalStateRoot)
-        };
-
-        // Generate witness using native Noir
-        console.log("Generating witness...");
-        const { witness } = await noir.execute(input);
-        console.log("Witness generated successfully");
-
-        // Generate proof using UltraHonk backend for EVM verification
-        console.log("Generating proof...");
-        const startTime = Date.now();
-        const proofData = await backend.generateProof(witness, {
-            verifierTarget: 'evm', // Use keccak hash for EVM verification
-        });
-        const provingTime = Date.now() - startTime;
-        console.log(`Proof generated successfully in ${provingTime}ms`);
-        console.log(`Proof size: ${proofData.proof.length} bytes`);
-        console.log(`Public inputs: ${proofData.publicInputs.length}`);
-
-        // Verify proof
-        console.log("Verifying proof...");
-        const isValid = await backend.verifyProof(proofData, { 
-            verifierTarget: 'evm', // Use keccak hash for EVM verification
-        });
-        assert(isValid, "Verification failed");
-        console.log("Proof verification succeeded");
-        
-        // Clean up backend resources
-        await api.destroy();
-        
-        return proofData;
+export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, signatures: Hex[], txHash: Hex, privateSigners: string[], signersAddressesFormat: number | string, privateThreshold: Hex, salt: bigint, onChainStateRoot: Hex, options?: ProveOptions) {
+    const config = {
+        signers: privateSigners,
+        threshold: Number(BigInt(privateThreshold)),
+        salt,
+        signersFormat: signersFormatFromFlag(signersAddressesFormat),
+    };
+    return proveTransaction(config, txHash, signatures, onChainStateRoot, options);
 }
-
-/**
- * Generates a ZK proof that validates the initial state configuration for a new signer proxy.
- * This proves that signers_root + threshold + salt correctly hash to the provided state_root.
- * 
- * @param signersRoot - The Merkle root of the signers tree
- * @param threshold - The minimum number of signatures required
- * @param salt - The private blinding salt of the commitment
- * @param stateRoot - The expected microchain ownership state root
- * @returns ProofData containing the proof and public inputs
- */
-export async function proveStateConfiguration(
-    signersRoot: Hex,
-    threshold: number,
-    salt: bigint,
-    stateRoot: Hex
-) {
-    // Load compiled state validation circuit
-    const circuitPath = join(
-        process.cwd(),
-        "noir",
-        "target",
-        "zk_multi_sig_ecdsa_private_state_validation.json"
-    );
-    const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
-
-    // Initialize UltraHonk backend for state validation circuit
-    const api = await Barretenberg.new({ threads: 1 });
-    const backend = new UltraHonkBackend(compiledCircuit.bytecode,  api );
-    const noir = new Noir(compiledCircuit);
-    console.log("State validation UltraHonk backend initialized");
-
-    try {
-        // Prepare circuit inputs
-        const input = {
-            signers_root: signersRoot,
-            threshold: threshold,
-            salt: fieldToHex(salt),
-            on_chain_state_root: pad(stateRoot, { size: 32 })
-        };
-
-        // Never log the salt: it is the blinding factor of the on-chain commitment.
-        console.log("State validation inputs:", { ...input, salt: "<redacted>" });
-
-        // Generate witness
-        console.log("Generating witness for state validation...");
-        const { witness } = await noir.execute(input);
-        console.log("Witness generated successfully");
-
-        // Generate proof
-        console.log("Generating state validation proof...");
-        const startTime = Date.now();
-        const proofData = await backend.generateProof(witness, {
-            verifierTarget: 'evm', // Use keccak hash for EVM verification
-        });
-        const provingTime = Date.now() - startTime;
-        console.log(`State validation proof generated in ${provingTime}ms`);
-        console.log(`Proof size: ${proofData.proof.length} bytes`);
-        console.log(`Public inputs: ${proofData.publicInputs.length}`);
-
-        // Verify proof locally
-        console.log("Verifying state validation proof...");
-        const isValid = await backend.verifyProof(proofData, {
-            verifierTarget: 'evm' // Use keccak hash for EVM verification
-        });
-        assert(isValid, "State validation proof verification failed");
-        console.log("State validation proof verified successfully");
-
-        return proofData;
-    } finally {
-        await api.destroy();
-    }
-}
-
 
 export async function sign(hre: HardhatRuntimeEnvironment, safeAddr: string, to: string, value: string, data: string) {
     // Get wallet client
@@ -453,7 +230,7 @@ export async function createSafeWithinMicorchainProtocol(hre: HardhatRuntimeEnvi
 export async function createPrivateMultiSignersProxyContract(
     hre: HardhatRuntimeEnvironment,
     privateSigners: string[],
-    privateThreshold: number,
+    privateThreshold: number | string,
     txValidationVerifierAddress: string,
     factoryAddress: string,
     privateSalt?: string
@@ -471,16 +248,10 @@ export async function createPrivateMultiSignersProxyContract(
 
     const factoryContract = await hre.viem.getContractAt("ZKMultiSigEcdsaFactory", factoryAddress as `0x${string}`);
 
-    // Fresh random salt unless the caller supplies one (e.g. to re-create a known configuration).
-    const saltProvided = privateSalt !== undefined && privateSalt.trim() !== "";
-    const salt = saltProvided ? parseSalt(privateSalt) : generateSalt();
-    const saltHex = fieldToHex(salt);
+    const { state, saltHex, saltProvided } = deriveState(privateSigners, privateThreshold, privateSalt);
 
-    const signersTree = buildSignersTree(privateSigners);
-    const finalStateRoot = computeStateRoot(signersTree.root, privateThreshold, salt);
-
-    const signersRootHex = toHex(signersTree.root) as Hex;
-    const stateRootHex = toHex(finalStateRoot) as Hex;
+    const signersRootHex = toHex(state.signersRoot) as Hex;
+    const stateRootHex = toHex(state.stateRoot) as Hex;
 
     console.log("\n📊 State Configuration:");
     console.log("   Private signers root:", signersRootHex);
@@ -489,17 +260,12 @@ export async function createPrivateMultiSignersProxyContract(
 
     // Generate state validation proof
     console.log("\n🔐 Generating state validation proof...");
-    const stateValidationProofData = await proveStateConfiguration(
-        signersRootHex,
-        privateThreshold,
-        salt,
-        stateRootHex
-    );
+    const stateValidationProofData = await proveStateValidation(state);
     console.log("✅ State validation proof generated");
 
     // Get the predicted signer address (deterministic via CREATE2)
     console.log("\n📍 Computing signer address...");
-    const stateRootAsBytes32 = pad(stateRootHex, { size: 32 }) as `0x${string}`;
+    const stateRootAsBytes32 = fieldToBytes32(state.stateRoot);
     const predictedSignerAddress = await factoryContract.read.getSigner([
         stateRootAsBytes32,
         txValidationVerifierAddress as `0x${string}`
@@ -511,7 +277,7 @@ export async function createPrivateMultiSignersProxyContract(
     const txHash = await factoryContract.write.createSigner([
         stateRootAsBytes32,
         txValidationVerifierAddress as `0x${string}`,
-        toHex(stateValidationProofData.proof)
+        stateValidationProofData.proof
     ], {
         account: walletClient.account!,
     });

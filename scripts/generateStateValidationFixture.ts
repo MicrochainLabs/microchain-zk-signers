@@ -11,7 +11,7 @@ import { join } from "path";
 import { Noir } from "@noir-lang/noir_js";
 import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js";
 import { toHex, pad } from "viem";
-import { computeStateRoot, fieldToHex } from "../zkcommon/stateRoot";
+import { computeStateRoot, saltToHex } from "zk-smart-account-kit-sdk/zk-multisig";
 
 const SIGNERS_ROOT = 16223743289759414337474221898890222788896083712324022742978151074941795950178n;
 const THRESHOLD = 2;
@@ -28,7 +28,7 @@ async function main() {
         const { witness } = await noir.execute({
             signers_root: toHex(SIGNERS_ROOT),
             threshold: THRESHOLD,
-            salt: fieldToHex(SALT),
+            salt: saltToHex(SALT),
             on_chain_state_root: pad(toHex(root), { size: 32 }),
         });
         const proofData = await backend.generateProof(witness, { verifierTarget: "evm" });

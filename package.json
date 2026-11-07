@@ -57,6 +57,7 @@
     "add": "^2.0.6",
     "msgpackr": "^1.11.3",
     "solady": "github:vectorized/solady#v0.1.9",
-    "viem": "^2.29.3"
+    "viem": "^2.29.3",
+    "zk-smart-account-kit-sdk": "^0.2.0"
   }
 }

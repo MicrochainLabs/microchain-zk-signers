@@ -11,22 +11,17 @@ import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { vars } from "hardhat/config";
 import { privateKeyToAccount } from "viem/accounts";
 import { 
-    toHex, toBytes, recoverAddress, recoverPublicKey, Hex, 
-    createWalletClient, http, WalletClient, pad, bytesToHex,
+    toHex, Hex, 
+    createWalletClient, http, WalletClient, pad,
     createPublicClient, getContract, parseEther, concat, 
     encodePacked, encodeAbiParameters, parseAbiParameters,
     PublicClient, Account, Chain, Transport, parseAbi, formatEther,
     Hash, TransactionReceipt, decodeEventLog, Address, WalletActions,
     walletActions
 } from "viem";
+import { fieldToBytes32, parseSalt, type ProveOptions } from "zk-smart-account-kit-sdk/zk-multisig";
 import factory from "../ignition/modules/zkMultiSigEcdsaFactoryNexus";
-import { addressLeaf, buildSignersTree, computeStateRoot, fieldToHex, generateSalt, parseSalt, printSaltBackupNotice } from "../zkcommon/stateRoot";
-import crypto from 'crypto';
-import { join } from "path";
-import { Noir } from "@noir-lang/noir_js";
-import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js";
-import { readFileSync } from "fs";
-import assert from 'assert';
+import { deriveState, printSaltBackupNotice, proveStateValidation, proveTransaction, signersFormatFromFlag } from "../zkcommon/zkMultiSig";
 
 
 
@@ -53,28 +48,6 @@ export interface CreateZKAccountParams {
 }
 
 // Helper functions
-function padArray(arr: any[], length: number, fillValue: any): any[] {
-    const padded = [...arr];
-    while (padded.length < length) {
-        padded.push(fillValue);
-    }
-    return padded;
-}
-
-function extractCoordinates(pubKey: Hex) {
-    const bytes = toBytes(pubKey);
-    // Remove 0x04 prefix for uncompressed key
-    const x = Array.from(bytes.slice(1, 33));
-    const y = Array.from(bytes.slice(33, 65));
-    return { x, y };
-}
-
-function extractRSFromSignature(sig: Hex): number[] {
-    const bytes = toBytes(sig);
-    // Extract r and s (first 64 bytes)
-    return Array.from(bytes.slice(0, 64));
-}
-
 function ensureHexPrefix(value: string): `0x${string}` {
     return value.startsWith("0x") ? value as `0x${string}` : `0x${value}`;
 }
@@ -335,70 +308,6 @@ export default ZKNexusHelper;
  */
 
 
-export async function proveStateConfiguration(
-    signersRoot: Hex,
-    threshold: number,
-    salt: bigint,
-    stateRoot: Hex
-) {
-    // Load compiled state validation circuit
-    const circuitPath = join(
-        process.cwd(),
-        "noir",
-        "target",
-        "zk_multi_sig_ecdsa_private_state_validation.json"
-    );
-    const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
-
-    // Initialize UltraHonk backend for state validation circuit
-    const api = await Barretenberg.new({ threads: 1 });
-    const backend = new UltraHonkBackend(compiledCircuit.bytecode,  api );
-    const noir = new Noir(compiledCircuit);
-    console.log("State validation UltraHonk backend initialized");
-
-    try {
-        // Prepare circuit inputs
-        const input = {
-            signers_root: signersRoot,
-            threshold: threshold,
-            salt: fieldToHex(salt),
-            on_chain_state_root: pad(stateRoot, { size: 32 })
-        };
-
-        // Never log the salt: it is the blinding factor of the on-chain commitment.
-        console.log("State validation inputs:", { ...input, salt: "<redacted>" });
-
-        // Generate witness
-        console.log("Generating witness for state validation...");
-        const { witness } = await noir.execute(input);
-        console.log("Witness generated successfully");
-
-        // Generate proof
-        console.log("Generating state validation proof...");
-        const startTime = Date.now();
-        const proofData = await backend.generateProof(witness, {
-            verifierTarget: 'evm', // Use keccak hash for EVM verification
-        });
-        const provingTime = Date.now() - startTime;
-        console.log(`State validation proof generated in ${provingTime}ms`);
-        console.log(`Proof size: ${proofData.proof.length} bytes`);
-        console.log(`Public inputs: ${proofData.publicInputs.length}`);
-
-        // Verify proof locally
-        console.log("Verifying state validation proof...");
-        const isValid = await backend.verifyProof(proofData, {
-            verifierTarget: 'evm' // Use keccak hash for EVM verification
-        });
-        assert(isValid, "State validation proof verification failed");
-        console.log("State validation proof verified successfully");
-
-        return proofData;
-    } finally {
-        await api.destroy();
-    }
-}
-
-
 /**
  * Generate ZK proof from pre-collected signatures (without generating new signatures)
  */
@@ -409,143 +318,18 @@ export async function proveWithExistingSignatures(
     privateThreshold: number,
     salt: bigint,
     onChainStateRoot: Hex,
-    signersAddressesFormat: number = 0
+    signersAddressesFormat: number = 0,
+    options?: ProveOptions
 ) {
-    const MAX_DEPTH = 4;
-    
-    // Nil values for padding
-    const nil_pubkey = {
-        x: Array.from(toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")),
-        y: Array.from(toBytes("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"))
+    const config = {
+        signers: privateSigners,
+        threshold: privateThreshold,
+        salt,
+        signersFormat: signersFormatFromFlag(signersAddressesFormat),
     };
-    const nil_signature = Array.from(
-        toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"));
-
-    // Sort signatures by address (normalize to lowercase for comparison)
-    const sortedSignatures = await Promise.all(signatures.map(async (sig) => {
-        const addr = await recoverAddress({ hash: txHash, signature: sig });
-        return { sig, addr: addr.toLowerCase() };
-    }));
-    sortedSignatures.sort((a, b) => a.addr.localeCompare(b.addr));
-    const sortedSigs = sortedSignatures.map(s => s.sig);
-    
-    console.log("=== proveWithExistingSignatures Debug ===");
-    console.log("Recovered signers from signatures:", sortedSignatures.map(s => s.addr));
-
-    // Build the signers tree and the salted state commitment via the shared helpers.
-    if (signersAddressesFormat != 0 && signersAddressesFormat != 1) {
-        throw new Error("Invalid owner addresses format");
-    }
-    const sortedPrivateSigners = [...privateSigners].map(s => s.toLowerCase());
-    const signersTree = buildSignersTree(sortedPrivateSigners, signersAddressesFormat == 1);
-
-    console.log("Signers tree size:", signersTree.size);
-    console.log("Signers tree root:", toHex(signersTree.root));
-
-    const finalStateRoot = computeStateRoot(signersTree.root, privateThreshold, salt);
-    console.log("Computed state root:", toHex(finalStateRoot));
-    console.log("On-chain state root:", onChainStateRoot);
-    if (BigInt(onChainStateRoot) != finalStateRoot) {
-        throw new Error(
-            "Computed state root does not match the on-chain commitment.\n" +
-            "Make sure --privatesigners, --privatethreshold and --privatesalt are the values used when creating the account."
-        );
-    }
-
-    // Generate merkle proofs for each signer
-    const signersPathsProof: any[][] = [];
-    const signersIndicesProof: any[][] = [];
-    const merkleProofLength: any[] = [];
-    
-    for (const signature of sortedSigs) {
-        const recoveredAddress = (await recoverAddress({ hash: txHash, signature: signature })).toLowerCase();
-        const index = await signersTree.indexOf(addressLeaf(recoveredAddress));
-        
-        if (index === -1) {
-            throw new Error(
-                `Signer address not found in tree!\n` +
-                `Recovered address: ${recoveredAddress}\n` +
-                `Expected signers in tree: ${sortedPrivateSigners.join(', ')}\n` +
-                `Recovered signers from signatures: ${sortedSignatures.map(s => s.addr).join(', ')}\n` +
-                `Make sure --privatesigners matches the addresses used when creating the account!`
-            );
-        }
-        
-        const addressProof = await signersTree.generateProof(index);
-
-        await signersPathsProof.push(padArray(addressProof.siblings.map(v => toHex(v)), MAX_DEPTH, "0x0"));
-        merkleProofLength.push(addressProof.siblings.length);
-
-        const merkleProofIndices = [];
-        for (let i = 0; i < MAX_DEPTH; i += 1) {
-            merkleProofIndices.push(((addressProof.index >> i) & 1) === 1);
-        }
-        
-        await signersIndicesProof.push(merkleProofIndices);
-    }
-    
-    // Prepare circuit inputs
-    const defaultTxSigSiblingsOrIndices = Array(MAX_DEPTH).fill("0x0");
-    const input = {
-        signers: padArray(await Promise.all(sortedSigs.map(async (sig) => {
-            const pubKey = await recoverPublicKey({
-                hash: txHash as `0x${string}`,
-                signature: sig
-            });
-            return extractCoordinates(pubKey);
-        })), 5, nil_pubkey),
-        threshold: toHex(BigInt(privateThreshold)),
-        signers_root: toHex(signersTree.root),
-        salt: fieldToHex(salt),
-        merkle_proof_length: padArray(merkleProofLength, 5, 0),
-        indices: padArray(signersIndicesProof, 5, Array(MAX_DEPTH).fill(false)),
-        siblings: padArray(signersPathsProof, 5, defaultTxSigSiblingsOrIndices),
-        signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 5, nil_signature),
-        txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
-        on_chain_state_root: toHex(finalStateRoot)
-    };
-
-    // Load compiled circuit
-    const circuitPath = join(process.cwd(), "noir", "target", "zk_multi_sig_ecdsa.json");
-    const compiledCircuit = JSON.parse(readFileSync(circuitPath, "utf-8"));
-    
-    // Initialize UltraHonk backend
-    const api = await Barretenberg.new({ threads: 1 });
-    const backend = new UltraHonkBackend(compiledCircuit.bytecode, api);
-    const noir = new Noir(compiledCircuit);
-
-    try {
-        // Generate witness
-        console.log("Generating witness for transaction...");
-        const { witness } = await noir.execute(input);
-        console.log("Witness generated successfully");
-
-        // Generate proof
-        console.log("Generating transaction proof...");
-        const startTime = Date.now();
-        const proofData = await backend.generateProof(witness, {
-            verifierTarget: 'evm',
-        });
-        const provingTime = Date.now() - startTime;
-        console.log(`Proof generated in ${provingTime}ms`);
-        console.log(`Proof size: ${proofData.proof.length} bytes`);
-        console.log(`Public inputs count: ${proofData.publicInputs.length}`);
-
-        // Verify proof
-        console.log("Verifying proof...");
-        const isValid = await backend.verifyProof(proofData, {
-            verifierTarget: 'evm'
-        });
-        assert(isValid, "Transaction proof verification failed");
-        console.log("Proof verified successfully ✅");
-        
-        // Log the hash that was proven
-        console.log(`   Hash proven in ZK: ${txHash}`);
-
-        return proofData;
-    } finally {
-        await api.destroy();
-    }
+    const proofData = await proveTransaction(config, txHash, signatures, onChainStateRoot, options);
+    console.log(`   Hash proven in ZK: ${txHash}`);
+    return proofData;
 }
 
 /**
@@ -908,7 +692,7 @@ export async function sendZKNexusUserOp(
     );
 
     // Set the proof as signature
-    userOp.signature = toHex(proofData.proof);
+    userOp.signature = proofData.proof;
     
     console.log("\n📤 Sending UserOperation...");
     
@@ -1201,7 +985,7 @@ export async function signUserOp(
 export async function createZKNexusAccount(
     hre: HardhatRuntimeEnvironment,
     privateSigners: string[],
-    privateThreshold: number,
+    privateThreshold: number | string,
     moduleValidatorAddress: string,
     factoryAddress: string,
     privateSalt?: string
@@ -1219,16 +1003,10 @@ export async function createZKNexusAccount(
     console.log("  Factory:", factoryAddress);
 
 
-    // Fresh random salt unless the caller supplies one (e.g. to re-create a known configuration).
-    const saltProvided = privateSalt !== undefined && privateSalt.trim() !== "";
-    const salt = saltProvided ? parseSalt(privateSalt) : generateSalt();
-    const saltHex = fieldToHex(salt);
+    const { state, saltHex, saltProvided } = deriveState(privateSigners, privateThreshold, privateSalt);
 
-    const signersTree = buildSignersTree(privateSigners);
-    const finalStateRoot = computeStateRoot(signersTree.root, privateThreshold, salt);
-    
-    const signersRootHex = toHex(signersTree.root) as Hex;
-    const stateRootHex = toHex(finalStateRoot) as Hex;
+    const signersRootHex = toHex(state.signersRoot) as Hex;
+    const stateRootHex = toHex(state.stateRoot) as Hex;
     
     console.log("\n📊 State Configuration:");
     console.log("   Private signers root:", signersRootHex);
@@ -1237,16 +1015,11 @@ export async function createZKNexusAccount(
     
     // Generate state validation proof
     console.log("\n🔐 Generating state validation proof...");
-    const stateValidationProofData = await proveStateConfiguration(
-        signersRootHex,
-        privateThreshold,
-        salt,
-        stateRootHex
-    );
+    const stateValidationProofData = await proveStateValidation(state);
     console.log("✅ State validation proof generated");
             
     console.log("\n📍 Computing signer address...");
-    const stateRootAsBytes32 = pad(stateRootHex, { size: 32 }) as `0x${string}`;
+    const stateRootAsBytes32 = fieldToBytes32(state.stateRoot);
     
     const helper = new ZKNexusHelper(
         factoryAddress,
@@ -1257,7 +1030,7 @@ export async function createZKNexusAccount(
     
     const { account, transaction } = await helper.createAccount({
         stateRoot:stateRootAsBytes32,
-        stateValidationProof: toHex(stateValidationProofData.proof),
+        stateValidationProof: stateValidationProofData.proof,
         index: BigInt(0)
     });
 
