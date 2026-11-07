@@ -1,5 +1,9 @@
 # Microchain ZK Signers
 
+[![CI](https://github.com/MicrochainLabs/microchain-zk-signers/actions/workflows/ci.yml/badge.svg)](https://github.com/MicrochainLabs/microchain-zk-signers/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE.txt)
+[![Release](https://img.shields.io/github/v/release/MicrochainLabs/microchain-zk-signers?include_prereleases)](https://github.com/MicrochainLabs/microchain-zk-signers/releases)
+
 **Privacy-preserving multi-signature smart account using zero-knowledge proofs**
 
 ## Overview
@@ -49,19 +53,19 @@ Contracts that adapt specific proof system verifiers (HONK, Groth16, etc.) to th
 
 1. Setup Phase:
    ┌──────────────┐
-   │ Signers pick │──────► Generate state root = Hash(signers + threshold)
-   │ M-of-N setup │
+   │ Signers pick │──────► Generate random private salt
+   │ M-of-N setup │        state root = Hash(signers, threshold, salt)
    └──────────────┘
                              ↓
                     Generate ZK proof of valid state
-                    (proves signers + threshold → state root)
+                    (proves signers + threshold + salt → state root)
                              ↓
                     Deploy proxy via factory
                              ↓
                     ┌─────────────────┐
                     │ Proxy deployed  │
-                    │ State: 0xabc... │ ← Only hash stored, signers private
-                    └─────────────────┘
+                    │ State: 0xabc... │ ← Only hash stored; signers, threshold
+                    └─────────────────┘   and salt stay private (hiding commitment)
 
 2. Transaction Execution:
    ┌─────────────┐
@@ -100,6 +104,7 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │  Private Inputs:                                             │
 │    • signers_root: Field         (Merkle root of signers)   │
 │    • threshold: u8                (M-of-N threshold)         │
+│    • salt: Field                  (Random blinding factor)   │
 │                                                               │
 │  Public Inputs:                                              │
 │    • state_root: Field            (On-chain commitment)      │
@@ -110,6 +115,7 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  1. Validate inputs are non-zero:                            │
 │     assert(signers_root != 0)                               │
+│     assert(salt != 0)                                        │
 │                                                               │
 │  2. Validate threshold bounds:                               │
 │     assert(threshold > 0)                                    │
@@ -118,9 +124,10 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  3. Compute state root:                                      │
 │     threshold_hash = Poseidon1([threshold])                  │
-│     state_root = MerkleRoot([                                │
+│     state_root = Poseidon3([                                 │
 │         signers_root,                                        │
-│         threshold_hash                                       │
+│         threshold_hash,                                      │
+│         salt                                                 │
 │     ])                                                       │
 │                                                               │
 │  4. Assert correctness:                                      │
@@ -152,12 +159,17 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │    • merkle_proof_siblings: [[Field; DEPTH]; MAX_SIGNERS]   │
 │    • signers_root: Field                                     │
 │    • threshold: u8                                           │
+│    • salt: Field                  (Random blinding factor)   │
 │                                                               │
 │  Public Inputs:                                              │
 │    • txn_hash: [u8; 32]          (Transaction hash to sign) │
 │    • state_root: Field            (On-chain commitment)      │
 │                                                               │
 │  ─────────────────────────────────────────────────────────  │
+│                                                               │
+│  0. Defense-in-depth bounds (same as deployment circuit):    │
+│     assert(signers_root != 0 && salt != 0)                   │
+│     assert(0 < threshold <= MAX_THRESHOLD)                   │
 │                                                               │
 │  For each signer slot (up to MAX_SIGNERS):                   │
 │                                                               │
@@ -200,9 +212,10 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 │                                                               │
 │  8. Reconstruct and verify state root:                       │
 │     threshold_hash = Poseidon1([threshold])                  │
-│     state_root = MerkleRoot([                                │
+│     state_root = Poseidon3([                                 │
 │         signers_root,                                        │
-│         threshold_hash                                       │
+│         threshold_hash,                                      │
+│         salt                                                 │
 │     ])                                                       │
 │     assert(computed_state_root == state_root)                │
 │                                                               │
@@ -221,6 +234,7 @@ The protocol uses two Noir circuits implemented with UltraHonk proof system:
 - **Signature Ordering**: Requires addresses to be in strictly increasing order to prevent signature reuse (same approach as Safe contracts)
 - **Address Derivation**: Follows Ethereum's address computation: `keccak256(uncompressed_pubkey)[12:32]`
 - **Merkle Tree**: Uses Poseidon hash for ZK-friendly tree operations
+- **Blinding Salt**: A private random field element folded into the state root makes the commitment hiding (see [State Root Construction](#state-root-construction))
 
 
 ### Privacy Properties
@@ -237,21 +251,47 @@ The protocol maintains complete privacy of:
 - That a valid proof was verified (without revealing any details)
 - Transaction outcomes
 
+These properties rely on the **private salt** in the state root. Without it, the inputs to the
+commitment (public addresses and a threshold in `[1, 5]`) are low-entropy, and the signer set could be
+recovered from the public state root by enumerating candidate addresses. The salt is generated at
+account creation and must be backed up with the signer list — see
+[State Root Construction](#state-root-construction) and
+[Security Considerations](#security-considerations).
+
 ## Technical Details
 
 ### State Root Construction
 
-The state root is a cryptographic commitment to the signer configuration:
+The state root is a hiding and binding commitment to the signer configuration:
 
 ```
-state_root = MerkleRoot([signers_merkle_root, Hash(threshold)])
+state_root = Poseidon3(signers_merkle_root, Poseidon1(threshold), salt)
 ```
 
 Where:
-- `signers_merkle_root` is the Merkle root of sorted signer public keys
+- `signers_merkle_root` is the LeanIMT (Poseidon2) root of `Poseidon1(address)` leaves, inserted in ascending address order
 - `threshold` is the M-of-N signature requirement
+- `salt` is a uniformly random, non-zero BN254 field element (≥ 248 bits of entropy) chosen once per account
 
-The state root serves as a public commitment to the private signer configuration, allowing verification without revealing individual signer identities or the threshold.
+The reference implementation is provided by [`zk-smart-account-kit-sdk`](https://www.npmjs.com/package/zk-smart-account-kit-sdk)
+(`zk-smart-account-kit-sdk/zk-multisig`: `computeStateRoot`, `buildMultiSigTree`, `generateSalt`, `parseSalt`,
+`createMultiSigState`, `generateMultiSigProof`, `generateStateValidationProof`) and must match `compute_state_root` in both Noir circuits;
+the shared test vector is checked on both sides (`nargo test`, `test/stateRoot.spec.ts`).
+
+**Why a salt?** `signers_merkle_root` and `threshold` are deterministic functions of public data
+(addresses) and a 5-value threshold. Without the salt an observer who can guess a candidate pool of
+addresses could enumerate subsets × thresholds and confirm them against the public `state_root`. The salt
+makes the commitment hiding, and also gives otherwise identical configurations distinct roots (and
+therefore distinct CREATE2 addresses).
+
+**Salt handling**
+- The CLI generates a fresh salt at creation (`createPrivateMultiSignersProxyContract`,
+  `createZKNexusAccount`) and prints it **once**. Pass it to every proof with `--privatesalt`.
+- Treat it like the signer list: the salt alone cannot authorize anything, but salt + signer list
+  de-anonymises the account.
+- It is **not recoverable from on-chain data**. Losing it makes it impossible to generate proofs, i.e.
+  the account can no longer be operated. Back it up together with the private signers and threshold.
+- Never reuse a salt across accounts; reuse re-introduces linkability.
 
 
 ### Zero-Knowledge Circuits
@@ -260,15 +300,15 @@ The protocol uses two ZK circuits:
 
 1. **State Validation Circuit**: Proves that a state root corresponds to a valid configuration
    - Public inputs: `state_root`
-   - Private inputs: `signers[]`, `threshold`
-   - Proves: `state_root = MerkleRoot([MerkleRoot(signers), Hash(threshold)])`
-   - Validates: threshold bounds, non-zero signers root
+   - Private inputs: `signers_root`, `threshold`, `salt`
+   - Proves: `state_root = Poseidon3(signers_root, Poseidon1(threshold), salt)`
+   - Validates: threshold bounds, non-zero signers root, non-zero salt
 
 2. **Transaction Validation Circuit**: Proves sufficient signatures without revealing signers
    - Public inputs: `transaction_hash`, `state_root`
-   - Private inputs: `signers[]`, `signatures[]`, `merkle_proofs[]`, `threshold`
+   - Private inputs: `signers[]`, `signatures[]`, `merkle_proofs[]`, `signers_root`, `threshold`, `salt`
    - Proves: At least `threshold` valid ECDSA signatures from signers in the Merkle tree
-   - Note: Reconstructs state root to verify against on-chain commitment
+   - Note: Reconstructs the salted state root to bind the private witnesses to the on-chain commitment
 
 ### ERC-8039 Proof Verification Interface
 
@@ -359,6 +399,17 @@ Or with Foundry (faster):
 forge test
 ```
 
+Circuit unit tests (including the shared salted state-root vector and negative cases):
+```bash
+cd noir && nargo test
+```
+
+After changing `noir/zk_multi_sig_ecdsa_private_state_validation`, regenerate the real-proof fixture
+used by `test/StateValidationE2E.t.sol`:
+```bash
+TS_NODE_TRANSPILE_ONLY=1 npx ts-node scripts/generateStateValidationFixture.ts
+```
+
 ## Use Cases
 
 - **Privacy-focused DAOs**: Multi-sig treasuries where signers want anonymity
@@ -373,6 +424,13 @@ forge test
 - State roots must be generated correctly off-chain before deployment
 - Private keys must be managed securely as with any signature scheme
 - Factory validates state before deployment to prevent invalid configurations
+- **Private salt**: the state root is only hiding because of the per-account random salt. The salt
+  must be (a) generated with a CSPRNG (the CLI does this), (b) backed up with the signer list — it is
+  needed for every proof and is unrecoverable from chain, (c) kept confidential — salt + signer list
+  de-anonymises the account, and (d) never reused across accounts
+- **Breaking change (v2 commitment)**: roots computed with the legacy unsalted construction
+  `Poseidon2(signers_root, Poseidon1(threshold))` are not accepted by the current circuits/verifiers;
+  accounts created with the old scheme must be re-created
 
 ## Safe Integration
 
@@ -461,6 +519,10 @@ Deploy a new contract owner:
 npx hardhat createPrivateMultiSignersProxyContract --network <mainnet|sepolia|gnosis|etc> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --factoryaddress <owner factory contract address> --txvalidationverifieraddress <tx validator contract address>
 ```
 
+The task generates a random **private salt**, folds it into the state root and prints it once at the end
+(`🔑 PRIVATE SALT`). Store it with the private signer list — it is required by `prove` and cannot be
+recovered from chain. To re-create a known configuration, pass `--privatesalt <salt>` explicitly.
+
 #### Creating new Safe using the contract owner
 
 ```
@@ -479,8 +541,11 @@ npx hardhat --network <mainnet|sepolia|gnosis|etc> sign --safe <safe address> --
 Having collected all the signatures, we need to generate a proof. This is done with the `prove` hardhat task.
 
 ```
-npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2> <sinagure3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --signersaddressesformat 0 
+npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2>,<signature3> --txhash <txhash> --privatesigners <signer1>,<signer2>,<signer3> --privatethreshold <threshold value> --privatesalt <salt printed at creation> --signersaddressesformat 0 
 ```
+
+The task recomputes the state root from `--privatesigners`, `--privatethreshold` and `--privatesalt` and
+aborts if it does not match the on-chain commitment of the Safe's ZK owner.
 
 Proving might take a couple of minutes, and would return a large hex string starting with 0x.  This is the prove that needs to be sent to zkSafe along with the transaction.
 
@@ -665,8 +730,9 @@ const factory = await ethers.deployContract("ZKMultiSigValidatorFactory", [
     registry  // optional, can be address(0)
 ]);
 
-// 2. Generate state root from your private configuration
-const stateRoot = computeStateRoot(signers, threshold);
+// 2. Generate state root from your private configuration (zk-smart-account-kit-sdk)
+const state = createMultiSigState({ signers, threshold });  // generates a salt: back it up with the signer list!
+const stateRoot = toHex(state.stateRoot);
 
 // 3. Create Nexus account with ZK validator
 const accountAddress = await factory.createAccount(
@@ -698,7 +764,9 @@ nexusAccount.installModule(
 #### Example 1: Create ZK Multi-Sig Nexus Account
 
 ```typescript
-import { generateStateRoot, generateStateValidationProof } from "./zkUtils";
+import { toHex } from "viem";
+import { createMultiSigState, generateStateValidationProof } from "zk-smart-account-kit-sdk/zk-multisig";
+import { loadCircuit } from "./zkcommon/zkMultiSig";
 
 // Define your private signers (off-chain only)
 const privateSigners = [
@@ -708,8 +776,13 @@ const privateSigners = [
 ];
 const threshold = 2;  // 2-of-3 required
 
-// Generate state root commitment
-const stateRoot = await generateStateRoot(privateSigners, threshold);
+// Derive the hiding state root commitment (generates a random salt) and its validity proof
+const state = createMultiSigState({ signers: privateSigners, threshold });
+const stateRoot = toHex(state.stateRoot);
+const { proof: stateValidationProof } = await generateStateValidationProof(
+    state,
+    loadCircuit("zk_multi_sig_ecdsa_private_state_validation")
+);
 
 // Deploy Nexus account via factory
 const nexusAccount = await factory.createAccount(
@@ -722,6 +795,7 @@ const nexusAccount = await factory.createAccount(
 
 console.log("Nexus account deployed:", nexusAccount);
 console.log("Private signers:", privateSigners, "(never revealed on-chain!)");
+console.log("Private salt:", toHex(state.salt), "(store securely — required for every proof)");
 ```
 
 #### Example 2: Submit UserOperation with ZK Proof
@@ -883,8 +957,14 @@ npx hardhat --network polygon sendZKNexusUserOp \
   --value 0.01 \
   --data 0x \
   --signatures "0x..." \
-  --userhash "0x..."
+  --userophash "0x..." \
+  --privatesigners 0xSigner1,0xSigner2,0xSigner3 \
+  --privatethreshold 2 \
+  --privatesalt 0x...   # printed once by createZKNexusAccount
 ```
+
+The task reads the account's on-chain state root from the validator and refuses to prove if
+`--privatesigners`/`--privatethreshold`/`--privatesalt` do not reproduce it.
 
 **Implementation Details**: See [zknexus/zknexus.ts](zknexus/zknexus.ts) for the complete working implementation.
 
@@ -976,8 +1056,8 @@ const largeTxUserOp = {
 
 ### Security Considerations
 
-1. **State Root Generation**: Must be computed correctly off-chain
-2. **Proof Generation**: Requires secure environment to generate proofs with private signer keys
+1. **State Root Generation**: Must be computed correctly off-chain, with a fresh random salt that is backed up alongside the private signers (see [State Root Construction](#state-root-construction))
+2. **Proof Generation**: Requires secure environment to generate proofs with private signer keys and the private salt
 3. **Verifier Trust**: The ERC8039 verifier contract must be audited and trusted
 4. **Gas Costs**: ZK proof verification is more expensive than simple ECDSA (~6-10x gas)
 5. **Circuit Security**: The Noir circuits must be correctly implemented and audited
@@ -999,7 +1079,19 @@ const largeTxUserOp = {
 
 ## License
 
-LGPL-3.0-only - See [LICENSE.txt](./LICENSE.txt)
+Apache-2.0 - See [LICENSE.txt](./LICENSE.txt) and [NOTICE](./NOTICE). Third-party dependencies (Safe, Nexus, OpenZeppelin, Barretenberg, ...) remain under their own licenses.
+
+## Security
+
+Please report vulnerabilities privately as described in [SECURITY.md](./SECURITY.md).
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](./CODE_OF_CONDUCT.md).
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md). Releases are published automatically from `main` — see [Releases](https://github.com/MicrochainLabs/microchain-zk-signers/releases).
 
 ## Contributing
 

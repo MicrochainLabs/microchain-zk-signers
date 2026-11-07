@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NARGO_VERSION: 1.0.0-beta.22
+  BB_VERSION: 5.0.0-nightly.20260522
+  NODE_VERSION: 22
+
+jobs:
+  # Solidity verifiers are generated from the circuits (noir/target is gitignored),
+  # so every Solidity build depends on this job.
+  noir:
+    name: Noir circuits & verifiers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nargo
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.nargo/bin/noirup" -v "$NARGO_VERSION"
+
+      - name: Install Barretenberg (bb)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/AztecProtocol/aztec-packages/next/barretenberg/bbup/install | bash
+          echo "$HOME/.bb" >> "$GITHUB_PATH"
+          "$HOME/.bb/bbup" -v "$BB_VERSION"
+
+      - name: Test circuits
+        working-directory: noir
+        run: nargo test --workspace
+
+      - name: Compile circuits
+        working-directory: noir
+        run: nargo compile --workspace
+
+      - name: Generate verification keys and Solidity verifiers
+        working-directory: noir
+        run: |
+          for circuit in zk_multi_sig_ecdsa zk_multi_sig_ecdsa_private_state_validation; do
+            bb write_vk -b "./target/${circuit}.json" -o "./target/${circuit}" --oracle_hash keccak
+            bb write_solidity_verifier -k "./target/${circuit}/vk" -o "./target/${circuit}.sol"
+          done
+
+      - name: Upload circuits & verifiers
+        uses: actions/upload-artifact@v4
+        with:
+          name: noir-target
+          path: noir/target
+          retention-days: 3
+          if-no-files-found: error
+
+  forge:
+    name: Foundry build & tests
+    needs: noir
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Top-level submodules only: nested ones (e.g. lib/solarray/lib/forge-std) add remapping
+          # contexts that hardhat-foundry rejects.
+          submodules: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: noir-target
+          path: noir/target
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build
+        run: forge build --sizes
+
+      - name: Test
+        run: forge test -vvv
+
+  hardhat:
+    name: Hardhat build & tests
+    needs: noir
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # hardhat.config.ts requires these for every network. Throwaway keys for CI only, not secrets.
+      HARDHAT_VAR_DEPLOYER_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001"
+      HARDHAT_VAR_SAFE_OWNER_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000002"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: noir-target
+          path: noir/target
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      # hardhat-foundry reads remappings through the forge CLI
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Compile
+        run: pnpm compile
+
+      - name: Test
+        run: pnpm test

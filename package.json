@@ -1,10 +1,19 @@
 {
-  "name": "zksafe",
-  "version": "2.0.0",
-  "description": "Safe with ZK Signing",
+  "name": "zk-multi-signers",
+  "version": "0.0.1",
+  "description": "Smart account with ZK Signing",
   "main": "index.js",
-  "author": "Valeriy Zamaraiev <v@1kx.capital>",
+  "author": "Walid Khemiri",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MicrochainLabs/microchain-zk-signers.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MicrochainLabs/microchain-zk-signers/issues"
+  },
+  "homepage": "https://github.com/MicrochainLabs/microchain-zk-signers#readme",
+  "keywords": ["zero-knowledge", "noir", "account-abstraction", "multisig", "erc-8039", "safe", "erc-7579"],
   "scripts": {
     "compile": "npx hardhat compile",
     "test": "npx hardhat test"
@@ -48,6 +57,7 @@
     "add": "^2.0.6",
     "msgpackr": "^1.11.3",
     "solady": "github:vectorized/solady#v0.1.9",
-    "viem": "^2.29.3"
+    "viem": "^2.29.3",
+    "zk-smart-account-kit-sdk": "^0.2.0"
   }
 }

@@ -1,13 +1,27 @@
 use poseidon::poseidon::bn254::hash_1 as poseidon1;
 use poseidon::poseidon::bn254::hash_2 as poseidon2;
+use poseidon::poseidon::bn254::hash_3 as poseidon3;
 use trees::merkle::MerkleTree;
 use trees::types::{Calculator, MT_Creator};
 use keccak256::keccak256;
 
 // Maximum depth of the Merkle Tree.
 pub global SIGNERS_MAX_DEPTH: u32 = 4;
-pub global MICROCHAIN_OWNERSHIP_STATE_MAX_DEPTH: u32 = 1;
 pub global MAX_SIGNERS: u32 = 5;
+pub global MAX_THRESHOLD: u8 = 5;
+
+/// Compute the on-chain commitment to the private signer configuration.
+///
+///     state_root = Poseidon3(signers_root, Poseidon1(threshold), salt)
+///
+/// `salt` is a private, uniformly random, non-zero field element that makes the
+/// commitment hiding. This function MUST stay identical to the one in
+/// `zk_multi_sig_ecdsa_private_state_validation` and to `computeStateRoot` in
+/// `zkcommon/stateRoot.ts`.
+pub fn compute_state_root(signers_root: Field, threshold: u8, salt: Field) -> Field {
+    let threshold_hash = poseidon1([threshold as Field]);
+    poseidon3([signers_root, threshold_hash, salt])
+}
 
 type Address = [u8; 20];
 type Signature = [u8; 64];
@@ -50,7 +64,7 @@ fn merkle_root_with_depth(leaf: Field, depth: u32, indices: [bool; SIGNERS_MAX_D
 }
 
 /// Verify if the signatures are valid and the signers are in the owners list.
-fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold: u8, merkle_proof_length: [u32; MAX_SIGNERS], merkle_proof_indices: [[bool; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], merkle_proof_siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], signatures: [Signature; MAX_SIGNERS], txn_hash: Hash, on_chain_state_root: Field) {
+fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold: u8, salt: Field, merkle_proof_length: [u32; MAX_SIGNERS], merkle_proof_indices: [[bool; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], merkle_proof_siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], signatures: [Signature; MAX_SIGNERS], txn_hash: Hash, on_chain_state_root: Field) {
     
     let mut curr_owner = [0; 20];
     let mut num_verified_signatures = 0;
@@ -100,14 +114,11 @@ fn verify_signers(signers: [PubKey; MAX_SIGNERS], signers_root: Field, threshold
         }
     }
     
-    assert(num_verified_signatures >= threshold);
+    assert(num_verified_signatures >= threshold, "Not enough valid signatures");
 
-    // Compute state root: depth 1 tree with signers_root (left) and threshold (right)
-    // Hash threshold for consistency with other leaf values in the Merkle tree
-    let threshold_hash = poseidon1([threshold as Field]);
-    let tree: MerkleTree<Field> = MerkleTree::new(poseidon2);
-    let state_root = tree.calculate_root(signers_root, 0, [threshold_hash]);
-    assert(on_chain_state_root == state_root);
+    // Bind the private witnesses (signers_root, threshold, salt) to the on-chain commitment.
+    let state_root = compute_state_root(signers_root, threshold, salt);
+    assert(on_chain_state_root == state_root, "State root mismatch");
 
 }
 
@@ -115,20 +126,33 @@ fn main(
     signers: [PubKey; MAX_SIGNERS], 
     threshold: u8, 
     signers_root: Field, 
+    salt: Field,
     merkle_proof_length: [u32; MAX_SIGNERS], 
     indices: [[bool; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
     siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS], 
     signatures: [Signature; MAX_SIGNERS], 
     txn_hash: pub Hash, 
     on_chain_state_root: pub Field) {
-    verify_signers(signers, signers_root, threshold, merkle_proof_length, indices, siblings, signatures, txn_hash, on_chain_state_root);
+    verify_signers(signers, signers_root, threshold, salt, merkle_proof_length, indices, siblings, signatures, txn_hash, on_chain_state_root);
 }
 
-#[test]
-fn test_main() {
-//nargo test --show-output
+// Shared test vector (also used by zk_multi_sig_ecdsa_private_state_validation and zkcommon/stateRoot.ts).
+global TEST_THRESHOLD: u8 = 2;
+global TEST_SIGNERS_ROOT: Field = 16223743289759414337474221898890222788896083712324022742978151074941795950178;
+global TEST_SALT: Field = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
+global TEST_STATE_ROOT: Field = 20321389246711366214573318284446720008267991448836355782945972567979658685784;
 
-    let threshold = 2;
+struct TestVector {
+    signers: [PubKey; MAX_SIGNERS],
+    signatures: [Signature; MAX_SIGNERS],
+    txn_hash: Hash,
+    merkle_proof_length: [u32; MAX_SIGNERS],
+    indices: [[bool; SIGNERS_MAX_DEPTH]; MAX_SIGNERS],
+    siblings: [[Field; SIGNERS_MAX_DEPTH]; MAX_SIGNERS],
+}
+
+/// Two valid signatures (slots 0 and 1) over `txn_hash`, three NIL slots.
+fn test_vector() -> TestVector {
     let signers = [
         PubKey{
             x: [
@@ -258,7 +282,6 @@ fn test_main() {
 
 
     ];
-    let signers_root = 16223743289759414337474221898890222788896083712324022742978151074941795950178;
     let merkle_proof_length = [ 2, 1, 0, 0, 0];
     let indices = [ 
         [ false, false, false, false ],
@@ -275,7 +298,39 @@ fn test_main() {
         [ 0, 0, 0, 0]
     ];
 
-    let state_root = 10223786790855367822232839749406742084971735911793673331153158573476372880461;
+    TestVector { signers, signatures, txn_hash, merkle_proof_length, indices, siblings }
+}
 
-    main(signers, threshold, signers_root, merkle_proof_length, indices, siblings, signatures, txn_hash, state_root)
+#[test]
+fn test_main() {
+    //nargo test --show-output
+    let v = test_vector();
+    main(v.signers, TEST_THRESHOLD, TEST_SIGNERS_ROOT, TEST_SALT, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, TEST_STATE_ROOT)
+}
+
+#[test]
+fn test_state_root_matches_state_validation_circuit() {
+    assert(compute_state_root(TEST_SIGNERS_ROOT, TEST_THRESHOLD, TEST_SALT) == TEST_STATE_ROOT);
+}
+
+#[test(should_fail_with = "State root mismatch")]
+fn test_wrong_salt_rejected() {
+    let v = test_vector();
+    main(v.signers, TEST_THRESHOLD, TEST_SIGNERS_ROOT, TEST_SALT + 1, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, TEST_STATE_ROOT)
+}
+
+#[test(should_fail_with = "State root mismatch")]
+fn test_legacy_unsalted_root_rejected() {
+    // Pre-salt commitment Poseidon2(signers_root, Poseidon1(threshold)) for the same vector.
+    let legacy_root = 10223786790855367822232839749406742084971735911793673331153158573476372880461;
+    let v = test_vector();
+    main(v.signers, TEST_THRESHOLD, TEST_SIGNERS_ROOT, TEST_SALT, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, legacy_root)
+}
+
+#[test(should_fail_with = "Not enough valid signatures")]
+fn test_threshold_not_met_rejected() {
+    // 3-of-N with only two signatures; root recomputed so only the count check can fail.
+    let v = test_vector();
+    let root = compute_state_root(TEST_SIGNERS_ROOT, 3, TEST_SALT);
+    main(v.signers, 3, TEST_SIGNERS_ROOT, TEST_SALT, v.merkle_proof_length, v.indices, v.siblings, v.signatures, v.txn_hash, root)
 }

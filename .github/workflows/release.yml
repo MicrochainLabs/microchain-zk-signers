@@ -1,0 +1,71 @@
+name: Release
+
+# Runs after CI succeeds on a push to main. Publishes a GitHub Release tagged
+# v<package.json version> unless that tag already exists.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag & publish release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists, nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          case "$version" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;; *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;; esac
+
+      - name: Download circuits & verifiers from the CI run
+        if: steps.version.outputs.release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: noir-target
+          path: noir-target
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package release assets
+        if: steps.version.outputs.release == 'true'
+        run: |
+          mkdir dist
+          tar -czf "dist/noir-circuits-and-verifiers-${{ steps.version.outputs.tag }}.tar.gz" -C noir-target .
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Create tag and GitHub Release
+        if: steps.version.outputs.release == 'true'
+        run: |
+          args=(--target "$SHA" --title "${{ steps.version.outputs.tag }}" --generate-notes)
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then args+=(--prerelease); fi
+          gh release create "${{ steps.version.outputs.tag }}" dist/* "${args[@]}"

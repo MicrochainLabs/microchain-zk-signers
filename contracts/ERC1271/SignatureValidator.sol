@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
