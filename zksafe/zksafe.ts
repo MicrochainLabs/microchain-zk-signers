@@ -2,13 +2,15 @@ import { zeroAddress, parseEther, toHex, Account, Hex, createWalletClient, http,
 import { privateKeyToAccount } from "viem/accounts";
 import { formatEther } from 'viem';
 import Safe, { EthSafeSignature } from '@safe-global/protocol-kit';
-import { SafeTransactionData } from '@safe-global/types-kit';
+import { SafeTransactionData, SafeVersion } from '@safe-global/types-kit';
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { vars } from "hardhat/config";
 import { fieldToBytes32, parseSalt, type ProveOptions } from "zk-smart-account-kit-sdk/zk-multisig";
 
 import factory from "../ignition/modules/zkMultiSigEcdsaFactory";
 import { deriveState, printSaltBackupNotice, proveStateValidation, proveTransaction, signersFormatFromFlag } from "../zkcommon/zkMultiSig";
+
+const SAFE_VERSION: SafeVersion = "1.5.0";
 
 function ensureHexPrefix(value: string): `0x${string}` {
     return value.startsWith("0x") ? value as `0x${string}` : `0x${value}`;
@@ -60,7 +62,7 @@ export async function send(hre: any, safeAddr: string, to: string, value: string
     //console.log(await safe.getEncodedTransaction(safeTx)); // for simulation and debugging in Tenderly
 
     const executeTxResponse = await safe.executeTransaction(safeTx)
-    const receipt = await executeTxResponse.transactionResponse?.wait()
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: executeTxResponse.hash as Hex })
 
     console.log("Transaction hash: ", executeTxResponse.hash);
     console.log("Transaction receipt: ", receipt);
@@ -201,6 +203,9 @@ export async function createSafeWithinMicorchainProtocol(hre: HardhatRuntimeEnvi
             safeAccountConfig: {
                 owners,
                 threshold: threshold,
+            },
+            safeDeploymentConfig: {
+                safeVersion: SAFE_VERSION,
             }
         },
     });
@@ -211,7 +216,7 @@ export async function createSafeWithinMicorchainProtocol(hre: HardhatRuntimeEnvi
     const transactionHash = await walletClient.sendTransaction({
         account: walletClient.account as Account,
         chain: walletClient.chain,
-        to: deploymentTransaction.to,
+        to: deploymentTransaction.to as `0x${string}`,
         value: parseEther(deploymentTransaction.value),
         data: deploymentTransaction.data as `0x${string}`,
     });
